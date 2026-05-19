@@ -1,0 +1,4360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>双点可达性分析</title>
+    <!-- D3.js 用于绑制维恩图可视化 -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    
+    <style>
+        /* ============================================
+           CSS 变量：定义全局颜色主题
+           ============================================ */
+        :root {
+            --whu-color: #0071e3;   /* A点颜色 - 蓝色 */
+            --hub-color: #c82626;   /* B点颜色 - 红色 */
+            --mid-color: #2e8b57;   /* 均衡区域颜色 - 绿色 */
+            --bg-color: #f5f5f7;    /* 页面背景色 */
+            --card-shadow: 0 4px 20px rgba(0,0,0,0.05);  /* 卡片阴影 */
+        }
+        
+        /* 通用的 box-sizing reset */
+        * { box-sizing: border-box; }
+
+        /* ============================================
+           页面基础布局
+           ============================================ */
+        body {
+            margin: 0;
+            font-family: -apple-system, "PingFang SC", sans-serif;
+            background: var(--bg-color);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            color: #1d1d1f;
+            overflow: hidden;
+        }
+        
+        /* 页头样式 */
+        header {
+            background: #fff;
+            padding: 14px 28px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+            z-index: 10;
+            flex-shrink: 0;
+        }
+        header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+
+        /* ============================================
+           主容器：三栏布局
+           ============================================ */
+        #main-container {
+            flex: 1; 
+            display: flex; 
+            padding: 16px; 
+            gap: 16px; 
+            overflow: hidden;
+        }
+
+        /* ============================================
+           左侧面板：地图选点 + 参数设置
+           ============================================ */
+        #left-panel {
+            width: 340px; 
+            display: flex; 
+            flex-direction: column;
+            gap: 14px; 
+            overflow-y: auto;
+        }
+        
+        /* 卡片通用样式 */
+        .card {
+            background: #fff; 
+            border-radius: 16px; 
+            padding: 18px;
+            box-shadow: var(--card-shadow);
+        }
+        
+        /* 区块标题样式 */
+        .section-label {
+            font-size: 12px; 
+            color: #86868b; 
+            text-transform: uppercase;
+            letter-spacing: 0.8px; 
+            font-weight: 600; 
+            margin-bottom: 12px;
+        }
+
+        /* ============================================
+           地图容器
+           ============================================ */
+        #map-container {
+            height: 220px; 
+            border-radius: 12px; 
+            overflow: hidden;
+            border: 2px dashed #d0d0d5;  /* 虚线边框表示未加载 */
+            position: relative;
+            transition: border-color 0.2s;
+        }
+        
+        /* 选点完成后：实线灰色边框 */
+        #map-container.picked { 
+            border-color: #9e9e9e; 
+            border-style: solid; 
+        }
+        
+        /* 高德地图挂载点：绝对定位填满容器 */
+        #amap-wrap {
+            position: absolute; 
+            inset: 0;
+            width: 100%; 
+            height: 100%;
+            border-radius: 10px; 
+            opacity: 0;  /* 初始透明，地图加载后渐显 */
+            transition: opacity 0.5s ease;
+        }
+        
+        /* 地图加载中：显示 loading 动画 */
+        #map-loading {
+            position: absolute; 
+            inset: 0; 
+            display: flex; 
+            align-items: center;
+            justify-content: center; 
+            flex-direction: column; 
+            gap: 8px;
+            background: #fafafa; 
+            z-index: 5;
+        }
+        #map-loading.hidden { display: none; }
+        
+        /* 加载动画：旋转的圆环 */
+        #map-loading .spinner {
+            width: 28px; 
+            height: 28px;
+            border: 2px solid #e0e0e5; 
+            border-top-color: var(--whu-color);
+            border-radius: 50%; 
+            animation: spin 0.7s linear infinite;
+        }
+        #map-loading .text { font-size: 12px; color: #aaa; }
+        
+        /* spin 动画定义 */
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* 地图加载失败提示 */
+        #map-error {
+            position: absolute; 
+            inset: 0; 
+            display: none;
+            align-items: center; 
+            justify-content: center;
+            flex-direction: column; 
+            gap: 8px; 
+            background: #fff8f8;
+            border-radius: 12px; 
+            padding: 16px; 
+            text-align: center;
+        }
+        #map-error.show { display: flex; }
+        #map-error .err-icon { font-size: 28px; }
+        #map-error .err-title { font-size: 13px; font-weight: 600; color: #c00; }
+        #map-error .err-msg { font-size: 11px; color: #888; line-height: 1.5; }
+
+        /* 选点提示文字：悬浮在地图中央 */
+        #pick-hint {
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            transform: translate(-50%,-50%);
+            background: rgba(255,255,255,0.92); 
+            backdrop-filter: blur(6px);
+            padding: 10px 18px; 
+            border-radius: 10px; 
+            font-size: 13px; 
+            font-weight: 500;
+            color: #555; 
+            pointer-events: none;  /* 不阻挡点击地图 */
+            z-index: 10; 
+            text-align: center;
+            transition: opacity 0.3s;
+        }
+        #pick-hint .step { display: block; font-size: 11px; color: #aaa; margin-top: 2px; }
+        #pick-hint.hidden { opacity: 0; pointer-events: none; }
+
+        /* ============================================
+           A/B 点位信息卡片
+           ============================================ */
+        .point-cards {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .point-card {
+            padding: 12px 14px; 
+            border-radius: 12px;
+            border: 2px solid #eee;  /* 未选中：灰色边框 */
+            transition: all 0.2s; 
+            cursor: default;
+        }
+        
+        /* 选中后：各自对应颜色边框 + 浅色背景 */
+        .point-card.done { 
+            border-color: #4caf50; 
+            background: #f5f5f7; 
+        }
+        
+        .point-card-label {
+            font-size: 11px; 
+            font-weight: 700; 
+            letter-spacing: 1px;
+            text-transform: uppercase; 
+            color: #aaa; 
+            margin-bottom: 4px;
+        }
+        #card-pointA.done { border-color: var(--whu-color); background: #f0f7ff; }
+        #card-pointA.done .point-card-label { color: var(--whu-color); }
+        #card-pointA.done .point-card-status { color: var(--whu-color); }
+        #card-pointB.done { border-color: var(--hub-color); background: #fff5f5; }
+        #card-pointB.done .point-card-label { color: var(--hub-color); }
+        #card-pointB.done .point-card-status { color: var(--hub-color); }
+        .point-card-coord { font-size: 10px; color: #999; line-height: 1.3; }
+        .point-card-name { 
+            font-size: 12px; 
+            color: #555; 
+            margin-top: 4px;
+            word-wrap: break-word;
+            white-space: normal;
+            overflow: visible;
+        }
+        .point-card-status { font-size: 10px; color: #bbb; margin-top: 3px; }
+        
+        /* 动态中心卡片样式 */
+        .center-card {
+            padding: 12px 14px;
+            border-radius: 12px;
+            border: 1px solid #eee;
+            border-left: 3px solid #eee;
+            transition: all 0.2s;
+            position: relative;
+            background: #fafafa;
+        }
+        .center-card.done {
+            background: #fff;
+        }
+        .center-card .remove-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 20px;
+            height: 20px;
+            border: none;
+            border-radius: 50%;
+            background: rgba(0,0,0,0.1);
+            color: #999;
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+        }
+        .center-card .remove-btn:hover {
+            background: rgba(200,38,38,0.15);
+            color: var(--hub-color);
+        }
+        .center-card.done .remove-btn {
+            display: flex;
+        }
+
+        /* ============================================
+           搜索参数控件
+           ============================================ */
+        .param-row {
+            display: flex; 
+            align-items: center;
+            justify-content: space-between; 
+            margin-bottom: 10px;
+        }
+        .param-label { font-size: 13px; font-weight: 500; color: #333; }
+        .param-val { font-size: 13px; font-weight: 700; color: var(--whu-color); }
+        
+        /* 范围滑块样式 */
+        input[type=range] {
+            width: 100%; 
+            height: 5px; 
+            border-radius: 3px; 
+            background: #e0e0e5;
+            appearance: none; 
+            outline: none; 
+            cursor: pointer;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            appearance: none; 
+            width: 16px; 
+            height: 16px; 
+            background: #fff;
+            border: 2px solid var(--whu-color); 
+            border-radius: 50%;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.15); 
+            cursor: pointer;
+        }
+        
+        /* 预设快捷按钮 */
+        .preset-btn {
+            flex: 1; 
+            min-width: 0; 
+            padding: 5px 4px;
+            border: 1px solid #e0e0e5; 
+            border-radius: 6px; 
+            background: #f9f9fb;
+            font-size: 11px; 
+            font-family: inherit; 
+            color: #555;
+            cursor: pointer; 
+            transition: all 0.15s; 
+            text-align: center;
+        }
+        .preset-btn:hover {
+            background: #f0f0f7;
+            border-color: var(--whu-color);
+            color: var(--whu-color);
+        }
+        .preset-btn.active {
+            background: var(--whu-color);
+            border-color: var(--whu-color);
+            color: #fff;
+        }
+        /* 小号预设按钮（密度控制用） */
+        .preset-btn-sm {
+            flex: 1;
+            min-width: 0;
+            padding: 4px 2px;
+            border: 1px solid #e0e0e5;
+            border-radius: 4px;
+            background: #fff;
+            color: #555;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s;
+            text-align: center;
+        }
+        .preset-btn-sm:hover {
+            background: #f5f5f7;
+            border-color: #bbb;
+        }
+        .preset-btn-sm.active {
+            background: var(--whu-color);
+            border-color: var(--whu-color);
+            color: #fff;
+        }
+        .hint-text { font-size: 10px; color: #aaa; margin-top: 4px; line-height: 1.4; }
+        
+        /* 关键词输入框 */
+        .keyword-input {
+            width: 100%; 
+            padding: 8px 12px; 
+            border: 1px solid #e0e0e5;
+            border-radius: 8px; 
+            font-size: 13px; 
+            font-family: inherit;
+            color: #333; 
+            background: #fafafa; 
+            outline: none;
+            transition: border-color 0.15s; 
+            margin-top: 6px;
+        }
+        .keyword-input:focus { 
+            border-color: var(--whu-color); 
+            background: #fff; 
+        }
+
+        /* ============================================
+           地点搜索框
+           ============================================ */
+        #search-box-wrap {
+            position: absolute; 
+            top: 10px; 
+            left: 10px; 
+            z-index: 20;
+            width: 200px;
+        }
+        
+        #search-input {
+            width: 100%; 
+            padding: 8px 12px; 
+            border: 1px solid #d0d0d5;
+            border-radius: 8px; 
+            font-size: 13px; 
+            font-family: inherit;
+            color: #333; 
+            background: rgba(255,255,255,0.95);
+            backdrop-filter: blur(4px);
+            outline: none;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        #search-input:focus { 
+            border-color: var(--whu-color); 
+            box-shadow: 0 2px 12px rgba(0,113,227,0.2);
+        }
+        #search-input::placeholder {
+            color: #aaa;
+        }
+        
+        /* 搜索建议下拉列表 */
+        #search-suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: #fff;
+            border: 1px solid #e0e0e5;
+            border-radius: 8px;
+            margin-top: 4px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+            max-height: 240px;
+            overflow-y: auto;
+            display: none;
+            z-index: 100;
+        }
+        #search-suggestions.show {
+            display: block;
+        }
+        .suggestion-item {
+            padding: 10px 12px;
+            cursor: pointer;
+            border-bottom: 1px solid #f0f0f5;
+            transition: background 0.15s;
+        }
+        .suggestion-item:last-child {
+            border-bottom: none;
+        }
+        .suggestion-item:hover {
+            background: #f5f5fa;
+        }
+        .suggestion-item .name {
+            font-size: 13px;
+            font-weight: 500;
+            color: #333;
+            margin-bottom: 2px;
+        }
+        .suggestion-item .district {
+            font-size: 11px;
+            color: #888;
+        }
+        .suggestion-item .action-btn {
+            float: right;
+            font-size: 11px;
+            color: var(--whu-color);
+            font-weight: 500;
+        }
+        .suggestion-item .action-btn:hover {
+            text-decoration: underline;
+        }
+
+        /* ============================================
+           主按钮样式
+           ============================================ */
+        #btn-analyze {
+            width: 100%; 
+            padding: 12px; 
+            border: none; 
+            border-radius: 12px;
+            background: var(--whu-color); 
+            color: #fff; 
+            font-size: 15px;
+            font-weight: 600; 
+            font-family: inherit; 
+            cursor: pointer;
+            transition: all 0.2s; 
+            display: flex; 
+            align-items: center;
+            justify-content: center; 
+            gap: 8px;
+        }
+        #btn-analyze:hover:not(:disabled) {
+            background: #005bb5; 
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0,113,227,0.3);
+        }
+        #btn-analyze:active:not(:disabled) { transform: translateY(0); }
+        #btn-analyze:disabled { background: #ccc; cursor: not-allowed; }
+
+        #btn-reset {
+            width: 100%; 
+            padding: 8px; 
+            border: 1px solid #e0e0e5;
+            border-radius: 10px; 
+            background: transparent; 
+            color: #888;
+            font-size: 13px; 
+            font-family: inherit; 
+            cursor: pointer;
+            transition: all 0.15s; 
+            margin-top: 8px;
+        }
+        #btn-reset:hover { 
+            border-color: var(--hub-color); 
+            color: var(--hub-color); 
+        }
+
+        /* ============================================
+           分析结果区域
+           ============================================ */
+        #result-stats { display: none; }
+        #result-stats.show { display: block; }
+        .result-poi-count { font-size: 13px; color: #666; margin-bottom: 8px; }
+        .result-poi-count strong { color: var(--whu-color); }
+
+        /* ============================================
+           中间画布：维恩图可视化
+           ============================================ */
+        #canvas-wrapper {
+            flex: 1; 
+            background: #fff; 
+            border-radius: 16px;
+            box-shadow: var(--card-shadow); 
+            position: relative; 
+            overflow: hidden;
+        }
+        #canvas-wrapper svg { width: 100%; height: 100%; }
+
+        /* 画布顶部模式切换条 */
+        .canvas-topbar {
+            position: absolute;
+            top: 14px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            z-index: 5;
+            pointer-events: none;
+        }
+        .canvas-topbar > * { pointer-events: auto; }
+        .canvas-mode-switch {
+            display: flex;
+            background: #f0f0f5;
+            border-radius: 10px;
+            padding: 3px;
+            gap: 3px;
+        }
+        .canvas-mode-btn {
+            padding: 7px 16px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            font-size: 13px;
+            font-weight: 500;
+            color: #666;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .canvas-mode-btn.active {
+            background: #0071e3;
+            color: #fff;
+            font-weight: 600;
+            box-shadow: 0 2px 8px rgba(0,113,227,0.25);
+        }
+        .canvas-hint {
+            font-size: 11px;
+            color: #aaa;
+            background: rgba(255,255,255,0.9);
+            padding: 2px 10px;
+            border-radius: 10px;
+        }
+
+        /* 空状态提示 */
+        #empty-state {
+            position: absolute; 
+            inset: 0; 
+            display: flex;
+            align-items: center; 
+            justify-content: center;
+            flex-direction: column; 
+            gap: 12px; 
+            pointer-events: none;
+        }
+        #empty-state .empty-icon { font-size: 48px; opacity: 0.25; }
+        #empty-state .empty-text { font-size: 15px; color: #bbb; font-weight: 500; }
+        #empty-state .empty-sub { font-size: 12px; color: #d5d5da; }
+        #empty-state.hidden { display: none; }
+
+        /* ============================================
+           右侧控制面板
+           ============================================ */
+        #control-panel {
+            width: 280px; 
+            display: flex; 
+            flex-direction: column;
+            gap: 14px; 
+            overflow-y: auto;
+        }
+
+        /* 统计列表：竖向排列，每行占满宽度 */
+        .stat-list {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .stat-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 9px 12px;
+            border-radius: 10px;
+            background: #f9f9fb;
+            transition: all 0.2s ease;
+            min-height: 52px;
+        }
+        .stat-row .stat-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+            flex: 1;
+        }
+        .stat-row .stat-seq {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            color: #fff;
+            flex-shrink: 0;
+        }
+        .stat-row .stat-body {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+            flex: 1;
+        }
+        .stat-row .stat-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #333;
+            white-space: normal;
+            overflow: visible;
+            line-height: 1.4;
+        }
+        .stat-row .stat-subtitle {
+            font-size: 11px;
+            color: #999;
+            white-space: normal;
+            overflow: visible;
+            line-height: 1.4;
+        }
+        .stat-row .stat-num {
+            font-size: 20px;
+            font-weight: 700;
+            flex-shrink: 0;
+            line-height: 1;
+            margin-right: 4px;
+        }
+        .stat-row .stat-arrow {
+            font-size: 13px;
+            color: #ccc;
+            flex-shrink: 0;
+            transition: transform 0.2s ease;
+        }
+        .stat-row-clickable {
+            cursor: pointer;
+        }
+        .stat-row-clickable:hover {
+            background: rgba(0,0,0,0.04);
+        }
+        .stat-row-clickable:hover .stat-arrow {
+            transform: translateX(3px);
+            color: #999;
+        }
+        .stat-row-clickable:active {
+            transform: translateX(0);
+        }
+        .stat-action {
+            font-size: 11px;
+            color: #999;
+            white-space: nowrap;
+            flex-shrink: 0;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+        .stat-row:hover .stat-action {
+            color: #666;
+        }
+        /* 高亮状态 */
+        .stat-row-highlighted {
+            background: rgba(0,113,227,0.08) !important;
+            box-shadow: 0 0 0 2px rgba(0,113,227,0.15);
+        }
+        /* 灰掉状态 */
+        .stat-row-grayed {
+            opacity: 0.3;
+            filter: grayscale(0.9);
+        }
+        
+        /* 双中心模式提示 */
+        .mode-hint-badge {
+            display: inline-block;
+            font-size: 9px;
+            padding: 2px 5px;
+            background: #e8e8ed;
+            border-radius: 4px;
+            color: #666;
+            margin-left: 4px;
+            cursor: pointer;
+        }
+        .mode-hint-badge:hover {
+            background: var(--whu-color);
+            color: white;
+        }
+        
+        /* 双交集分隔线 */
+        .stat-divider {
+            height: 1px;
+            background: #e8e8ed;
+            margin: 6px 0;
+        }
+        .stat-divider-label {
+            font-size: 10px;
+            color: #999;
+            text-align: center;
+            margin: 2px 0;
+            padding: 2px 0;
+        }
+
+        /* 区域POI热词面板 */
+        .hotword-panel {
+            display: flex;
+            gap: 8px;
+            margin-top: 4px;
+        }
+        .hotword-col {
+            flex: 1;
+            min-width: 0;
+        }
+        .hotword-col-title {
+            font-size: 10px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            padding-bottom: 3px;
+            border-bottom: 1px solid;
+        }
+        .hotword-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+        .hotword-tag {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 20px;
+            border: 1px solid;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .hotword-tag:hover {
+            opacity: 0.7;
+            transform: scale(1.05);
+        }
+
+        /* 底部图例 */
+        .legend-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            font-size: 10px;
+            color: #999;
+            padding: 8px 12px;
+            background: #fafafa;
+            border-radius: 8px;
+            margin-top: 8px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .legend-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .legend-line {
+            width: 14px;
+            height: 2px;
+            border-radius: 1px;
+            flex-shrink: 0;
+        }
+
+        /* 模式切换标签页 */
+        .tab-group {
+            display: flex; 
+            background: #f0f0f5; 
+            border-radius: 10px;
+            padding: 3px; 
+            gap: 3px;
+        }
+        .tab-btn {
+            flex: 1; 
+            padding: 8px 6px; 
+            border: none; 
+            border-radius: 8px;
+            background: transparent; 
+            font-size: 13px; 
+            font-weight: 500;
+            color: #666; 
+            cursor: pointer; 
+            transition: all 0.2s; 
+            font-family: inherit;
+        }
+        .tab-btn.active {
+            background: #fff; 
+            color: #1d1d1f; 
+            font-weight: 600;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+        }
+
+        /* ============================================
+           滑块控件
+           ============================================ */
+        .slider-group { margin-top: 14px; }
+        .slider-header {
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 6px;
+        }
+        .slider-label { font-size: 13px; font-weight: 500; color: #333; }
+        .slider-val {
+            font-size: 13px; 
+            font-weight: 700; 
+            color: var(--whu-color);
+            min-width: 48px; 
+            text-align: right;
+        }
+        
+        /* 范围滑块包装器（双滑块：最小值+最大值） */
+        .range-slider-wrap {
+            position: relative; 
+            height: 30px;
+        }
+        .range-track {
+            position: absolute; 
+            top: 50%; 
+            transform: translateY(-50%);
+            height: 5px; 
+            background: linear-gradient(to right, #4caf50, #ff9800, #f44336);
+            border-radius: 3px; 
+            pointer-events: none;  /* 不阻挡拖动 */
+        }
+        .range-slider-wrap input[type=range] {
+            position: absolute; 
+            width: 100%; 
+            top: 50%; 
+            transform: translateY(-50%);
+            background: transparent; 
+            pointer-events: none;  /* 由子元素接管交互 */
+        }
+        .range-slider-wrap input[type=range]::-webkit-slider-thumb { pointer-events: auto; }
+
+        /* 数字输入框 */
+        .num-input {
+            width: 52px; 
+            padding: 4px 6px; 
+            border: 1px solid #e0e0e5;
+            border-radius: 6px; 
+            font-size: 13px; 
+            font-family: inherit;
+            color: #333; 
+            background: #fafafa; 
+            outline: none;
+            text-align: center; 
+            transition: border-color 0.15s;
+        }
+        .num-input:focus { 
+            border-color: var(--whu-color); 
+            background: #fff; 
+        }
+        .mode-hint { 
+            font-size: 10px; 
+            color: #aaa; 
+            margin-top: 6px; 
+            line-height: 1.4; 
+        }
+
+        /* ============================================
+           Tooltip 悬浮提示
+           ============================================ */
+        .tooltip {
+            position: fixed;
+            padding: 10px 14px;
+            background: rgba(255,255,255,0.96); 
+            backdrop-filter: blur(8px);
+            border: 1px solid #d2d2d7; 
+            border-radius: 10px; 
+            font-size: 12px;
+            pointer-events: none;
+            opacity: 0; 
+            z-index: 1000;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+            transition: opacity 0.15s; 
+            max-width: 160px; 
+            line-height: 1.5;
+        }
+        .tooltip .tip-title { font-weight: 600; margin-bottom: 5px; font-size: 13px; }
+        .tooltip .tip-row { display: flex; justify-content: space-between; gap: 12px; }
+        .tooltip .tip-diff { margin-top: 3px; font-size: 11px; color: #888; }
+        .tooltip .tip-diff .pos { color: var(--whu-color); }
+        .tooltip .tip-diff .neg { color: var(--hub-color); }
+    </style>
+</head>
+<body>
+
+<!-- ============================================
+     页头
+     ============================================ -->
+<header>
+    <div style="display:flex;align-items:center;width:100%;">
+        <h1 style="margin:0;font-size:18px;">多中心地点可达性分析</h1>
+    </div>
+</header>
+
+<div id="main-container">
+
+    <!-- ============================================
+         左侧面板：地图选点 + 参数配置
+         ============================================ -->
+    <aside id="left-panel">
+
+        <!-- 地图选点卡片 -->
+        <div class="card">
+            <div class="section-label">地图选点</div>
+            
+            <!-- 地图容器 -->
+            <div id="map-container">
+                <!-- 加载中动画 -->
+                <div id="map-loading">
+                    <div class="spinner"></div>
+                    <div class="text">地图加载中…</div>
+                </div>
+                
+                <!-- 加载失败提示 -->
+                <div id="map-error">
+                    <div class="err-icon">⚠️</div>
+                    <div class="err-title">地图加载失败</div>
+                    <div class="err-msg" id="map-error-msg">请检查网络连接，或在控制台查看错误信息</div>
+                </div>
+                
+                <!-- 选点提示 -->
+                <div id="pick-hint">
+                    点击地图选择 A 点
+                    <span class="step">（再点一次选 B 点）</span>
+                </div>
+                
+                <!-- 地点搜索框 -->
+                <div id="search-box-wrap">
+                    <input type="text" id="search-input" placeholder="搜索地点定位…" autocomplete="off">
+                    <div id="search-suggestions"></div>
+                </div>
+                
+                <!-- 高德地图挂载点 -->
+                <div id="amap-wrap"></div>
+            </div>
+
+            <!-- 中心点列表（动态生成） -->
+            <div class="point-cards" style="margin-top: 12px;" id="center-list">
+                <!-- 动态生成卡片 -->
+            </div>
+            
+            <!-- 添加中心按钮（最多3个） -->
+            <button id="btn-add-center" style="
+                margin-top: 8px;
+                width: 100%;
+                padding: 8px;
+                border: 2px dashed #d0d0d5;
+                border-radius: 10px;
+                background: transparent;
+                color: #888;
+                font-size: 13px;
+                font-family: inherit;
+                cursor: pointer;
+                transition: all 0.2s;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+            ">
+                <span id="add-center-icon">+</span>
+                <span id="add-center-text">添加第3个中心</span>
+            </button>
+
+            <!-- 使用提示 -->
+            <div style="margin-top: 12px; padding: 10px 12px; background: #fffbf0; border-radius: 10px; border: 1px solid #f0e0c0; font-size: 12px; color: #a07030; line-height: 1.5;">
+                💡 在地图上点击两个位置，分析从 A、B 两点到周边景点的驾车时间差异
+            </div>
+        </div>
+
+        <!-- POI 搜索参数卡片 -->
+        <div class="card">
+            <div class="section-label">POI 搜索参数</div>
+
+            <!-- 搜索半径滑块 -->
+            <div class="param-row">
+                <span class="param-label">搜索半径</span>
+                <span class="param-val" id="val-radius">5 km</span>
+            </div>
+            <input type="range" id="input-radius" min="1" max="15" value="5" step="1">
+            
+            <!-- 半径预设按钮 -->
+            <div style="display:flex; gap:6px; margin-top:8px;">
+                <button class="preset-btn" data-r="3">3km</button>
+                <button class="preset-btn" data-r="5">5km</button>
+                <button class="preset-btn" data-r="8">8km</button>
+                <button class="preset-btn" data-r="10">10km</button>
+                <button class="preset-btn" data-r="15">15km</button>
+            </div>
+
+            <!-- POI 关键词输入 -->
+            <div style="margin-top: 14px;">
+                <div class="param-label" style="margin-bottom:6px;">POI 关键词</div>
+                <input type="text" id="input-keyword" class="keyword-input"
+                    value="景点,公园,博物馆,广场,寺庙,景区" placeholder="多个关键词用英文逗号分隔">
+                <div class="hint-text">输入：如"景点,博物馆" · 关键词越多数据越丰富</div>
+
+                <!-- 常用关键词组合 -->
+                <div style="margin-top:8px; display:flex; flex-wrap:wrap; gap:4px;">
+                    <button class="preset-btn kw-preset" data-kw="景点">景点</button>
+                    <button class="preset-btn kw-preset" data-kw="景点,公园,博物馆">旅游</button>
+                    <button class="preset-btn kw-preset" data-kw="商场,超市,餐饮">购物餐饮</button>
+                    <button class="preset-btn kw-preset" data-kw="酒店,民宿">住宿</button>
+                    <button class="preset-btn kw-preset" data-kw="景点,公园,博物馆,寺庙,景区,广场,寺庙,教堂,古迹,遗址,游乐场,动物园,植物园,展览馆,纪念馆,科技馆,影院,商场,餐饮,酒店,银行,医院">全类型</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 操作按钮卡片 -->
+        <div class="card">
+            <button id="btn-analyze" disabled>
+                <span id="btn-icon">⏳</span>
+                <span id="btn-text">请选择两个位置</span>
+            </button>
+            <button id="btn-reset">重置选点</button>
+        </div>
+
+        <!-- 分析结果展示 -->
+        <div class="card" id="result-stats" style="display:none;">
+            <div class="section-label">分析结果</div>
+            <div class="result-poi-count" id="result-poi-count"></div>
+            <div style="font-size:11px; color:#aaa; line-height:1.6;" id="result-detail"></div>
+        </div>
+
+    </aside>
+
+    <!-- ============================================
+         中间画布：维恩图可视化
+         ============================================ -->
+    <div id="canvas-wrapper">
+        <!-- 画布顶部模式切换与提示 -->
+        <div class="canvas-topbar">
+            <div class="canvas-mode-switch">
+                <button class="canvas-mode-btn active" id="canvas-mode-three" onclick="switchCanvasMode('three')">三中心模式</button>
+                <button class="canvas-mode-btn" id="canvas-mode-two" onclick="switchCanvasMode('two')">双中心模式</button>
+            </div>
+            <div class="canvas-hint">悬停或点击区域查看详情</div>
+        </div>
+
+        <!-- D3.js SVG 画布 -->
+        <svg id="viz-svg"></svg>
+
+        <!-- 悬浮提示框 -->
+        <div id="tooltip" class="tooltip"></div>
+
+        <!-- 空状态提示（无数据时显示） -->
+        <div id="empty-state">
+            <div class="empty-icon">📍</div>
+            <div class="empty-text">在左侧地图选择两个位置</div>
+            <div class="empty-sub">然后点击「开始分析」查看可达性对比</div>
+        </div>
+    </div>
+
+    <!-- ============================================
+         右侧控制面板
+         ============================================ -->
+    <aside id="control-panel">
+
+        <!-- 实时统计 - 统一面板 -->
+        <div class="card" id="stat-card">
+            <div class="section-label" id="stat-panel-label">实时分布情况（POI数量）</div>
+            <div id="stat-items-container">
+                <!-- 动态生成 -->
+            </div>
+        </div>
+
+        <!-- 底部图例 -->
+        <div class="card" id="legend-card" style="display:none;">
+            <div class="section-label">图例</div>
+            <div class="legend-bar">
+                <div class="legend-item">
+                    <span class="legend-dot" style="background:#0071e3"></span>
+                    <span>悬停：高亮对应区域</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot" style="background:#c82626"></span>
+                    <span>点击：切换双中心模式</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot" style="background:#ccc"></span>
+                    <span>灰色：当前模式下无关区域</span>
+                </div>
+                <div class="legend-item">
+                    <span style="color:#999;font-size:13px;">›</span>
+                    <span>切换查看：点击切换到对应双中心模式</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 融合控制面板 -->
+        <div class="card" id="panel-merged">
+            <div class="section-label">可达性控制</div>
+
+            <!-- 时间区间 -->
+            <div class="slider-group">
+                <div class="slider-header">
+                    <span class="slider-label">时间区间</span>
+                    <span class="slider-val" id="val-tmax">0 – 60 min</span>
+                </div>
+                <div class="range-slider-wrap" id="range-wrap">
+                    <div class="range-track" id="range-track"></div>
+                    <input type="range" id="input-t-min" min="0" max="60" value="0">
+                    <input type="range" id="input-t-max" min="0" max="60" value="15">
+                </div>
+                <div style="display:flex; justify-content:space-between; font-size:10px; color:#bbb; margin-top:4px;">
+                    <span>0m</span><span id="scale-max-label">60m</span>
+                </div>
+                <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;">
+                    <button class="preset-btn" onclick="setRange(0, 15)">0-15min</button>
+                    <button class="preset-btn" onclick="setRange(15, 30)">15-30min</button>
+                    <button class="preset-btn" onclick="setRange(30, 45)">30-45min</button>
+                    <button class="preset-btn" onclick="setRange(0, 60)">全部</button>
+                </div>
+            </div>
+
+            <!-- 等待时长 -->
+            <div class="slider-group" style="margin-top: 14px;">
+                <div class="slider-header">
+                    <span class="slider-label">等待时长</span>
+                    <span class="slider-val" id="val-dt" style="color: var(--mid-color)">8 min</span>
+                </div>
+                <input type="range" id="input-merged-dt" min="0" max="20" value="8">
+                <div style="font-size:10px; color:#888; margin-top:4px;">等待时长 dt 控制多人公平可达性</div>
+                <div style="display:flex; gap:6px; margin-top:8px;">
+                    <button class="preset-btn" onclick="setMergedDt(0)">0min</button>
+                    <button class="preset-btn" onclick="setMergedDt(5)">5min</button>
+                    <button class="preset-btn" onclick="setMergedDt(8)">8min</button>
+                    <button class="preset-btn" onclick="setMergedDt(15)">15min</button>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- 标签显示密度 -->
+        <div class="card">
+            <div class="section-label">显示密度</div>
+
+            <!-- C1密度 -->
+            <div style="margin-bottom:10px;">
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                    <span style="width:8px;height:8px;border-radius:50%;background:var(--whu-color);"></span>
+                    <span style="font-size:12px;color:#666;" id="label-density-c1">C1区域</span>
+                    <span style="margin-left:auto;font-size:12px;font-weight:600;color:var(--whu-color);" id="val-density-c1">30%</span>
+                </div>
+                <div style="display:flex; gap:4px;">
+                    <button class="preset-btn-sm active" data-zone="C1" data-density="0.3">30%</button>
+                    <button class="preset-btn-sm" data-zone="C1" data-density="0.5">50%</button>
+                    <button class="preset-btn-sm" data-zone="C1" data-density="0.7">70%</button>
+                    <button class="preset-btn-sm" data-zone="C1" data-density="1">100%</button>
+                </div>
+            </div>
+
+            <!-- C2密度 -->
+            <div style="margin-bottom:10px;">
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                    <span style="width:8px;height:8px;border-radius:50%;background:var(--hub-color);"></span>
+                    <span style="font-size:12px;color:#666;" id="label-density-c2">C2区域</span>
+                    <span style="margin-left:auto;font-size:12px;font-weight:600;color:var(--hub-color);" id="val-density-c2">30%</span>
+                </div>
+                <div style="display:flex; gap:4px;">
+                    <button class="preset-btn-sm active" data-zone="C2" data-density="0.3">30%</button>
+                    <button class="preset-btn-sm" data-zone="C2" data-density="0.5">50%</button>
+                    <button class="preset-btn-sm" data-zone="C2" data-density="0.7">70%</button>
+                    <button class="preset-btn-sm" data-zone="C2" data-density="1">100%</button>
+                </div>
+            </div>
+
+            <!-- C3密度 -->
+            <div style="margin-bottom:10px;">
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                    <span style="width:8px;height:8px;border-radius:50%;background:#ff6b00;"></span>
+                    <span style="font-size:12px;color:#666;" id="label-density-c3">C3区域</span>
+                    <span style="margin-left:auto;font-size:12px;font-weight:600;color:#ff6b00;" id="val-density-c3">30%</span>
+                </div>
+                <div style="display:flex; gap:4px;">
+                    <button class="preset-btn-sm active" data-zone="C3" data-density="0.3">30%</button>
+                    <button class="preset-btn-sm" data-zone="C3" data-density="0.5">50%</button>
+                    <button class="preset-btn-sm" data-zone="C3" data-density="0.7">70%</button>
+                    <button class="preset-btn-sm" data-zone="C3" data-density="1">100%</button>
+                </div>
+            </div>
+
+            <!-- 公共区域密度 -->
+            <div>
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                    <span style="width:8px;height:8px;border-radius:50%;background:var(--mid-color);"></span>
+                    <span style="font-size:12px;color:#666;">公共区域</span>
+                    <span style="margin-left:auto;font-size:12px;font-weight:600;color:var(--mid-color);" id="val-density-mid">30%</span>
+                </div>
+                <div style="display:flex; gap:4px;">
+                    <button class="preset-btn-sm active" data-zone="mid" data-density="0.3">30%</button>
+                    <button class="preset-btn-sm" data-zone="mid" data-density="0.5">50%</button>
+                    <button class="preset-btn-sm" data-zone="mid" data-density="0.7">70%</button>
+                    <button class="preset-btn-sm" data-zone="mid" data-density="1">100%</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 时间差模式面板（隐藏，统一到融合面板） -->
+        <div class="card" id="panel-diff" style="display:none;">
+        </div>
+
+    </aside>
+</div>
+
+<!-- ============================================
+     全屏加载遮罩
+     ============================================ -->
+<div id="loading-overlay" style="
+    display:none; 
+    position:fixed; 
+    inset:0;
+    background:rgba(255,255,255,0.88); 
+    backdrop-filter:blur(4px);
+    z-index:200; 
+    align-items:center; 
+    justify-content:center;
+    flex-direction:column; 
+    gap:16px;">
+    <!-- 加载动画 -->
+    <div style="
+        width:40px; 
+        height:40px;
+        border:3px solid #e0e0e5; 
+        border-top-color:var(--whu-color);
+        border-radius:50%; 
+        animation:spin 0.8s linear infinite;"></div>
+    <div id="loading-text" style="font-size:14px; color:#555; font-weight:500;"></div>
+    <div id="loading-sub"  style="font-size:12px; color:#aaa;"></div>
+</div>
+
+<!-- ============================================
+     JavaScript 逻辑
+     ============================================ -->
+<script>
+// ================================================================
+// 全局状态管理
+// ================================================================
+
+/**
+ * RAW_DATA: 存储分析结果的景点数据数组
+ * 格式: [{ text: '景点名', times: { C1: 15, C2: 20, C3: 25 }, ...]
+ * times对象只包含实际选中的中心的key
+ */
+let RAW_DATA = [];
+
+/**
+ * DATA_MAX: 滑块范围的最大值（分钟）
+ * 分析完成后会根据实际数据动态调整
+ */
+let DATA_MAX = 60;
+
+// 中心点颜色预定义（最多支持3个中心）
+const CENTER_COLORS = [
+    '#0071e3',   // C1 蓝色
+    '#c82626',   // C2 红色
+    '#ff6b00'    // C3 橙色
+];
+
+/**
+ * State: 应用核心状态对象
+ * 支持2-3个中心点的选址与分析
+ */
+const State = {
+    map: null,           // 高德地图实例
+    centers: [],        // 中心点数组，最多3个 [{ id, lnglat, name, color, marker, addr }, ...]
+    circles: [],         // 搜索范围圆圈数组
+    pickStep: 0,         // 当前选点步骤: 0=C1, 1=C2, 2=C3, null=完成
+    isDynamic: false,    // 是否已执行过分析
+    ready: false,        // AMap API 是否已就绪
+    density: { C1: 0.3, C2: 0.3, C3: 0.3, mid: 0.3 },  // 各区域独立密度（兼容双中心）
+    // 兼容双中心模式的别名（仅用于显示）
+    get pointA() { return this.centers[0]?.lnglat || null; },
+    get pointB() { return this.centers[1]?.lnglat || null; },
+    get markerA() { return this.centers[0]?.marker || null; },
+    get markerB() { return this.centers[1]?.marker || null; },
+    get circleA() { return this.circles[0] || null; },
+    get circleB() { return this.circles[1] || null; },
+    get labelA() { return this.centers[0]?.name || 'C1'; },
+    get labelB() { return this.centers[1]?.name || 'C2'; },
+    get addrA() { return this.centers[0]?.addr || null; },
+    get addrB() { return this.centers[1]?.addr || null; },
+    set labelA(v) { if (this.centers[0]) this.centers[0].name = v; },
+    set labelB(v) { if (this.centers[1]) this.centers[1].name = v; },
+    set addrA(v) { if (this.centers[0]) this.centers[0].addr = v; },
+    set addrB(v) { if (this.centers[1]) this.centers[1].addr = v; }
+};
+
+/**
+ * Venn图统一状态管理
+ */
+const VennState = {
+    centerCount: 2,          // 当前中心数量：2 | 3
+    activeCenters: ['C1', 'C2'], // 当前双中心模式时的活动中心
+    hoveredZone: null,       // 当前悬停的区域
+    activeZone: null,       // 当前激活的区域
+    
+    /**
+     * 切换到指定双中心模式
+     */
+    switchToTwoCenters(c1, c2) {
+        this.activeCenters = [c1, c2];
+        this.centerCount = 2;
+        // 同步顶部标签和画布顶部切换条
+        document.querySelectorAll('.tab-btn, .canvas-mode-btn').forEach(b => b.classList.remove('active'));
+        const tabBtn = document.getElementById('tab-two');
+        const canvasBtn = document.getElementById('canvas-mode-two');
+        if (tabBtn) tabBtn.classList.add('active');
+        if (canvasBtn) canvasBtn.classList.add('active');
+        updateUI();
+        Painter.update();
+    },
+
+    /**
+     * 切换到三中心模式
+     */
+    switchToThreeCenters() {
+        this.centerCount = 3;
+        this.activeCenters = State.centers.map(c => c.id);
+        // 同步顶部标签和画布顶部切换条
+        document.querySelectorAll('.tab-btn, .canvas-mode-btn').forEach(b => b.classList.remove('active'));
+        const tabBtn = document.getElementById('tab-three');
+        const canvasBtn = document.getElementById('canvas-mode-three');
+        if (tabBtn) tabBtn.classList.add('active');
+        if (canvasBtn) canvasBtn.classList.add('active');
+        updateUI();
+        Painter.update();
+    },
+    
+    /**
+     * 设置悬停区域
+     */
+    setHoveredZone(zone) {
+        if (this.hoveredZone !== zone) {
+            this.hoveredZone = zone;
+            updateStatRowHighlight();
+        }
+    },
+    
+    /**
+     * 检查区域是否应高亮
+     */
+    isHighlighted(zone) {
+        if (this.hoveredZone === zone) return true;
+        return false;
+    },
+    
+    /**
+     * 检查区域是否应灰掉（在双中心模式下）
+     */
+    isGrayed(zone) {
+        if (this.centerCount === 3) return false;
+        // 双中心模式下：mid/ABC 始终显示
+        if (zone === 'mid' || zone === 'ABC') return false;
+        // 双交集：若包含当前两个活动中心则不灰掉
+        if (zone.includes('C')) {
+            const parts = zone.match(/C\d/g) || [];
+            if (parts.length === 2) {
+                return !parts.every(p => this.activeCenters.includes(p));
+            }
+        }
+        // 单中心区域
+        return !this.activeCenters.includes(zone);
+    }
+};
+
+/**
+ * 获取当前中心数量
+ */
+function getCenterCount() {
+    return State.centers.length;
+}
+
+/**
+ * 获取中心ID列表
+ */
+function getCenterIds() {
+    return State.centers.map(c => c.id);
+}
+
+/**
+ * 获取中心的显示标签
+ */
+function getCenterLabel(id) {
+    const center = State.centers.find(c => c.id === id);
+    return center ? center.name : id;
+}
+
+/**
+ * 获取中心的颜色
+ */
+function getCenterColor(id) {
+    const center = State.centers.find(c => c.id === id);
+    return center ? center.color : '#999';
+}
+
+/**
+ * 渲染中心点卡片列表
+ */
+/**
+ * 动态渲染统计面板
+ */
+function truncateLabel(name, maxLen) {
+    if (!name) return '';
+    if (name.length <= maxLen) return name;
+    return name.slice(0, maxLen) + '…';
+}
+
+/**
+ * 切换顶部模式标签
+ */
+function switchModeTab(mode) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    const btn = document.getElementById('tab-' + mode);
+    if (btn) btn.classList.add('active');
+
+    // 同步画布顶部切换条
+    document.querySelectorAll('.canvas-mode-btn').forEach(b => b.classList.remove('active'));
+    const canvasBtn = document.getElementById('canvas-mode-' + mode);
+    if (canvasBtn) canvasBtn.classList.add('active');
+
+    if (mode === 'help') {
+        alert('多中心地点可达性分析\n\n· 点击地图选择中心点（最多3个）\n· 拖动滑块调整时间区间和等待时长\n· 点击Venn图双交集区域可切换双中心模式\n· 悬停高亮、灰色表示当前模式下无关区域\n· 右侧面板实时显示各区域POI数量');
+    } else if (mode === 'three') {
+        VennState.switchToThreeCenters();
+    } else if (mode === 'two') {
+        const ids = getCenterIds();
+        if (ids.length >= 2) VennState.switchToTwoCenters(ids[0], ids[1]);
+    }
+}
+
+function switchCanvasMode(mode) {
+    switchModeTab(mode);
+}
+
+/**
+ * 仅更新统计面板行高亮状态（不重绘画布）
+ */
+function updateStatRowHighlight() {
+    document.querySelectorAll('.stat-row').forEach(row => {
+        const zone = row.dataset.zone || row.dataset.intersect;
+        if (zone) {
+            row.classList.toggle('stat-row-highlighted', VennState.isHighlighted(zone));
+        }
+    });
+}
+
+function renderStatPanel() {
+    const container = document.getElementById('stat-items-container');
+    const centerCount = getCenterCount();
+    const centerIds = getCenterIds();
+    
+    if (centerCount === 0 || RAW_DATA.length === 0) {
+        container.innerHTML = '<div class="stat-list"><div class="stat-row" style="color:#999;"><div class="stat-body"><span class="stat-title">等待分析...</span></div><span class="stat-num">—</span></div></div>';
+        return;
+    }
+    
+    let html = '<div class="stat-list">';
+    
+    if (centerCount === 2) {
+        // 双中心模式
+        const [c1, c2] = centerIds;
+        const c1Color = getCenterColor(c1);
+        const c2Color = getCenterColor(c2);
+        const center1 = State.centers.find(c => c.id === c1);
+        const center2 = State.centers.find(c => c.id === c2);
+        const district1 = getDistrictLevel(center1?.addr);
+        const district2 = getDistrictLevel(center2?.addr);
+        const name1 = getCenterLabel(c1);
+        const name2 = getCenterLabel(c2);
+        
+        html += `
+            <div class="stat-row" data-zone="${c1}">
+                <div class="stat-left">
+                    <span class="stat-seq" style="background:${c1Color}">①</span>
+                    <div class="stat-body">
+                        <span class="stat-title">${district1 || name1}</span>
+                        <span class="stat-subtitle">${name1}</span>
+                    </div>
+                </div>
+                <span id="count-c1" class="stat-num" style="color:${c1Color};margin-left:auto;">—</span>
+            </div>
+            <div class="stat-row" data-zone="${c2}">
+                <div class="stat-left">
+                    <span class="stat-seq" style="background:${c2Color}">②</span>
+                    <div class="stat-body">
+                        <span class="stat-title">${district2 || name2}</span>
+                        <span class="stat-subtitle">${name2}</span>
+                    </div>
+                </div>
+                <span id="count-c2" class="stat-num" style="color:${c2Color};margin-left:auto;">—</span>
+            </div>
+            <div class="stat-row" data-zone="mid">
+                <div class="stat-left">
+                    <span class="stat-seq" style="background:var(--mid-color)">👥</span>
+                    <div class="stat-body">
+                        <span class="stat-title">公共区域</span>
+                        <span class="stat-subtitle">公共区域</span>
+                    </div>
+                </div>
+                <span id="count-mid" class="stat-num" style="color:var(--mid-color);margin-left:auto;">—</span>
+            </div>
+        `;
+    } else if (centerCount === 3) {
+        // 三中心模式
+        const [c1, c2, c3] = centerIds;
+        const c1Color = getCenterColor(c1);
+        const c2Color = getCenterColor(c2);
+        const c3Color = getCenterColor(c3);
+        const center1 = State.centers.find(c => c.id === c1);
+        const center2 = State.centers.find(c => c.id === c2);
+        const center3 = State.centers.find(c => c.id === c3);
+        const district1 = getDistrictLevel(center1?.addr);
+        const district2 = getDistrictLevel(center2?.addr);
+        const district3 = getDistrictLevel(center3?.addr);
+        const name1 = getCenterLabel(c1);
+        const name2 = getCenterLabel(c2);
+        const name3 = getCenterLabel(c3);
+        
+        html += `
+            <div class="stat-row" data-zone="${c1}">
+                <div class="stat-left">
+                    <span class="stat-seq" style="background:${c1Color}">①</span>
+                    <div class="stat-body">
+                        <span class="stat-title">${district1 || name1}</span>
+                        <span class="stat-subtitle">${name1}</span>
+                    </div>
+                </div>
+                <span id="count-c1" class="stat-num" style="color:${c1Color};margin-left:auto;">—</span>
+            </div>
+            <div class="stat-row" data-zone="${c2}">
+                <div class="stat-left">
+                    <span class="stat-seq" style="background:${c2Color}">②</span>
+                    <div class="stat-body">
+                        <span class="stat-title">${district2 || name2}</span>
+                        <span class="stat-subtitle">${name2}</span>
+                    </div>
+                </div>
+                <span id="count-c2" class="stat-num" style="color:${c2Color};margin-left:auto;">—</span>
+            </div>
+            <div class="stat-row" data-zone="${c3}">
+                <div class="stat-left">
+                    <span class="stat-seq" style="background:${c3Color}">③</span>
+                    <div class="stat-body">
+                        <span class="stat-title">${district3 || name3}</span>
+                        <span class="stat-subtitle">${name3}</span>
+                    </div>
+                </div>
+                <span id="count-c3" class="stat-num" style="color:${c3Color};margin-left:auto;">—</span>
+            </div>
+            <div class="stat-row" data-zone="ABC">
+                <div class="stat-left">
+                    <span class="stat-seq" style="background:var(--mid-color)">👥</span>
+                    <div class="stat-body">
+                        <span class="stat-title">公共区域（ABC）</span>
+                        <span class="stat-subtitle">C1∩C2∩C3</span>
+                    </div>
+                </div>
+                <span id="count-abc" class="stat-num" style="color:var(--mid-color);margin-left:auto;">—</span>
+            </div>
+            
+            <div class="stat-divider-label">双交集（点击切换双中心模式）</div>
+            
+            <div class="stat-row stat-row-clickable" data-intersect="C1C2" data-c1="${c1}" data-c2="${c2}"
+                 onmouseenter="VennState.setHoveredZone('C1C2')" 
+                 onmouseleave="VennState.setHoveredZone(null)"
+                 onclick="VennState.switchToTwoCenters('${c1}', '${c2}')">
+                <div class="stat-left">
+                    <span class="stat-seq" style="background:#bbb">∩</span>
+                    <div class="stat-body">
+                        <span class="stat-title">C1 ∩ C2</span>
+                        <span class="stat-subtitle">两中心交集（可点击切换）</span>
+                    </div>
+                </div>
+                <span id="count-c1c2" class="stat-num" style="color:#333;margin-left:auto;">—</span>
+            </div>
+            <div class="stat-row stat-row-clickable" data-intersect="C1C3" data-c1="${c1}" data-c2="${c3}"
+                 onmouseenter="VennState.setHoveredZone('C1C3')"
+                 onmouseleave="VennState.setHoveredZone(null)"
+                 onclick="VennState.switchToTwoCenters('${c1}', '${c3}')">
+                <div class="stat-left">
+                    <span class="stat-seq" style="background:#bbb">∩</span>
+                    <div class="stat-body">
+                        <span class="stat-title">C1 ∩ C3</span>
+                        <span class="stat-subtitle">两中心交集（可点击切换）</span>
+                    </div>
+                </div>
+                <span id="count-c1c3" class="stat-num" style="color:#333;margin-left:auto;">—</span>
+            </div>
+            <div class="stat-row stat-row-clickable" data-intersect="C2C3" data-c1="${c2}" data-c2="${c3}"
+                 onmouseenter="VennState.setHoveredZone('C2C3')"
+                 onmouseleave="VennState.setHoveredZone(null)"
+                 onclick="VennState.switchToTwoCenters('${c2}', '${c3}')">
+                <div class="stat-left">
+                    <span class="stat-seq" style="background:#bbb">∩</span>
+                    <div class="stat-body">
+                        <span class="stat-title">C2 ∩ C3</span>
+                        <span class="stat-subtitle">两中心交集（可点击切换）</span>
+                    </div>
+                </div>
+                <span id="count-c2c3" class="stat-num" style="color:#333;margin-left:auto;">—</span>
+            </div>
+        `;
+    }
+    
+    // 添加返回三中心模式按钮（双中心模式下）
+    if (VennState.centerCount === 2 && centerCount === 3) {
+        html += `
+            <div style="margin-top: 8px; text-align: center;">
+                <span class="mode-hint-badge" onclick="VennState.switchToThreeCenters()">↩ 返回三中心模式</span>
+            </div>
+        `;
+    }
+    
+    html += '</div>';
+    container.innerHTML = html;
+    
+    // 更新标题
+    const label = document.getElementById('stat-panel-label');
+    const prefix = State.isDynamic ? '分析结果' : '实时分布';
+    if (VennState.centerCount === 2) {
+        label.textContent = prefix + '情况（POI数量）';
+    } else {
+        label.textContent = prefix + '情况（POI数量）';
+    }
+}
+
+function formatNum(n) {
+    return (n || 0).toLocaleString('zh-CN');
+}
+
+/**
+ * 更新统计数字
+ */
+function updateStatCounts(zoneCounts, displayCounts) {
+    const centerCount = getCenterCount();
+    
+    if (centerCount === 2) {
+        const [c1, c2] = VennState.activeCenters;
+        const countC1 = displayCounts[c1] || 0;
+        const countC2 = displayCounts[c2] || 0;
+        const countMid = displayCounts['mid'] || 0;
+        
+        const elC1 = document.getElementById('count-c1');
+        const elC2 = document.getElementById('count-c2');
+        const elMid = document.getElementById('count-mid');
+        
+        if (elC1) elC1.textContent = formatNum(countC1);
+        if (elC2) elC2.textContent = formatNum(countC2);
+        if (elMid) elMid.textContent = formatNum(countMid);
+        
+        // 应用灰掉状态到所在行
+        if (elC1) {
+            elC1.closest('.stat-row').classList.toggle('stat-row-grayed', VennState.isGrayed(c1));
+        }
+        if (elC2) {
+            elC2.closest('.stat-row').classList.toggle('stat-row-grayed', VennState.isGrayed(c2));
+        }
+        if (elMid) {
+            elMid.closest('.stat-row').classList.toggle('stat-row-grayed', VennState.isGrayed('mid'));
+        }
+    } else if (centerCount === 3) {
+        const [c1, c2, c3] = getCenterIds();
+        
+        const ids = ['c1', 'c2', 'c3', 'abc', 'c1c2', 'c1c3', 'c2c3'];
+        const zones = [c1, c2, c3, 'ABC', 'C1C2', 'C1C3', 'C2C3'];
+        
+        ids.forEach((id, i) => {
+            const el = document.getElementById(`count-${id}`);
+            if (el) {
+                el.textContent = formatNum(displayCounts[zones[i]] || 0);
+                const row = el.closest('.stat-row');
+                if (row) {
+                    row.classList.toggle('stat-row-highlighted', VennState.isHighlighted(zones[i]));
+                    row.classList.toggle('stat-row-grayed', VennState.isGrayed(zones[i]));
+                }
+            }
+        });
+    }
+}
+
+function renderCenterList() {
+    const list = document.getElementById('center-list');
+    const addBtn = document.getElementById('btn-add-center');
+    const count = getCenterCount();
+    
+    // 生成卡片HTML
+    list.innerHTML = State.centers.map((center, idx) => {
+        // 提取区县级别的地址（用于粗体标签）
+        const districtLevel = getDistrictLevel(center.addr);
+        return `
+        <div class="center-card ${center.lnglat ? 'done' : ''}"
+             id="card-${center.id}"
+             data-id="${center.id}"
+             style="${center.lnglat ? `border-left-color: ${center.color}; background: ${center.color}08;` : ''}">
+            <button class="remove-btn" data-id="${center.id}" title="移除此中心">×</button>
+            <div class="point-card-label" style="${center.lnglat ? `color: ${center.color};` : ''}">${districtLevel || center.name}</div>
+            <div class="point-card-coord" id="coord-${center.id}">
+                ${center.lnglat ? `${center.lnglat[0].toFixed(4)}, ${center.lnglat[1].toFixed(4)}` : '未选择位置'}
+            </div>
+            <div class="point-card-name" id="name-${center.id}">
+                ${center.lnglat ? center.name : '<span>—</span>'}
+            </div>
+            <div class="point-card-status" id="status-${center.id}">
+                ${center.lnglat ? '已选择' : '点击地图选择'}
+            </div>
+        </div>
+    `}).join('');
+    
+    // 渲染占位卡片（虚线框）
+    if (count < 3) {
+        for (let i = count; i < 3; i++) {
+            const id = 'C' + (i + 1);
+            list.innerHTML += `
+                <div class="center-card" id="card-${id}" data-id="${id}" style="opacity: 0.5; border-style: dashed;">
+                    <div class="point-card-label" style="color: #bbb;">${id}</div>
+                    <div class="point-card-coord" id="coord-${id}">待选择</div>
+                    <div class="point-card-name"><span>—</span></div>
+                    <div class="point-card-status">点击地图选择</div>
+                </div>
+            `;
+        }
+    }
+    
+    // 更新添加按钮状态
+    if (count >= 3) {
+        addBtn.style.display = 'none';
+    } else {
+        addBtn.style.display = 'flex';
+        addBtn.querySelector('#add-center-text').textContent = 
+            count === 0 ? '点击地图选择第1个中心' : 
+            count === 1 ? '添加第2个中心' : '添加第3个中心';
+        addBtn.style.borderColor = '#d0d0d5';
+        addBtn.style.color = '#888';
+    }
+    
+    // 绑定删除按钮事件
+    list.querySelectorAll('.remove-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const id = btn.dataset.id;
+            removeCenter(id);
+        });
+    });
+}
+
+/**
+ * 移除指定中心点
+ */
+function removeCenter(centerId) {
+    const idx = State.centers.findIndex(c => c.id === centerId);
+    if (idx === -1) return;
+    
+    const center = State.centers[idx];
+    if (center.marker) center.marker.setMap(null);
+    if (State.circles[idx]) State.circles[idx].setMap(null);
+    
+    State.centers.splice(idx, 1);
+    State.circles.splice(idx, 1);
+    
+    // 重新编号后续中心
+    State.centers.forEach((c, i) => {
+        c.id = 'C' + (i + 1);
+        c.color = CENTER_COLORS[i];
+    });
+    
+    // 调整选点步骤
+    if (State.pickStep !== null && State.pickStep >= State.centers.length) {
+        State.pickStep = State.centers.length > 0 ? State.centers.length - 1 : 0;
+    }
+    if (State.centers.length === 0) {
+        State.pickStep = 0;
+    }
+    
+    renderCenterList();
+    updateSearchCircles();
+    updateUI();
+    updateDynamicLabels();
+}
+
+/**
+ * 更新单个中心卡片内容
+ */
+function updateCenterCard(idx) {
+    const center = State.centers[idx];
+    if (!center) return;
+    
+    const card = document.getElementById(`card-${center.id}`);
+    if (card) {
+        card.classList.add('done');
+        card.style.borderLeftColor = center.color;
+        card.style.background = center.color + '08';
+        card.querySelector('.point-card-label').style.color = center.color;
+    }
+    
+    const coordEl = document.getElementById(`coord-${center.id}`);
+    if (coordEl && center.lnglat) {
+        coordEl.textContent = `${center.lnglat[0].toFixed(4)}, ${center.lnglat[1].toFixed(4)}`;
+    }
+    
+    const nameEl = document.getElementById(`name-${center.id}`);
+    if (nameEl) {
+        nameEl.textContent = center.name;
+    }
+    
+    const statusEl = document.getElementById(`status-${center.id}`);
+    if (statusEl) {
+        statusEl.textContent = '已选择';
+    }
+}
+
+/**
+ * 添加一个新中心点
+ */
+function addCenter(lnglat, name, addr) {
+    const idx = State.centers.length;
+    if (idx >= 3) return null;
+    
+    const id = 'C' + (idx + 1);
+    const center = {
+        id,
+        lnglat,
+        name: name || id,
+        color: CENTER_COLORS[idx],
+        marker: null,
+        addr
+    };
+    State.centers.push(center);
+    
+    // 同步更新兼容属性
+    State['label' + (idx === 0 ? 'A' : idx === 1 ? 'B' : 'C')] = center.name;
+    
+    return center;
+}
+
+/**
+ * 移除最后一个中心点
+ */
+function removeLastCenter() {
+    if (State.centers.length === 0) return;
+    
+    const center = State.centers.pop();
+    if (center.marker) center.marker.setMap(null);
+    return center;
+}
+
+/**
+ * 清除所有中心点
+ */
+function clearAllCenters() {
+    while (State.centers.length > 0) {
+        removeLastCenter();
+    }
+    State.circles.forEach(c => c.setMap(null));
+    State.circles = [];
+}
+
+// ================================================================
+// 统一配置
+// ================================================================
+
+/**
+ * CONFIG: 可视化配置参数
+ */
+const CONFIG = {
+    // SVG 画布尺寸
+    canvas: { width: 1200, height: 800 },
+    
+    // 椭圆参数
+    ellipse: {
+        cxOffset: 180,       // 椭圆中心间距基础值（减小以增加紧凑度）
+        baseRx: 220,          // 椭圆 X 半径基础值（减小）
+        baseRy: 180,          // 椭圆 Y 半径基础值（减小）
+        dynamicFactor: 18,    // 根据数据量动态调整椭圆的系数
+        overlapRatio: 0.50    // 两椭圆重叠比例（增加重叠）
+    },
+
+    // 螺旋布局参数
+    spiral: {
+        factor: 0.12,        // 螺旋半径增长系数（减小使标签更紧凑）
+        step: 0.04,          // 螺旋角度步进（减小提高精度）
+        maxTheta: 6000,      // 最大螺旋角度（限制范围，防止标签过于分散）
+        maxRadius: 80,       // 最大半径限制，让标签更集中
+        padding: 1           // 标签间距（增加1px防止重叠）
+    },
+
+    // 字体大小层级 - 按层级渐变：大→中→小（加大区分度）
+    levels: [
+        { size: 25, weight: "700", padding: 0, opacity: 0.9    },  // 大标签：最大最突出
+        { size: 15, weight: "500", padding: 0, opacity: 0.35 },  // 中标签：中等偏淡
+        { size: 10,  weight: "300", padding: 0, opacity: 0.25 }   // 小标签：最小最淡
+    ],
+
+    // 颜色配置
+    colors: { 
+        pointA: "#0071e3",   // A点颜色（蓝色）
+        pointB: "#c82626",   // B点颜色（红色）
+        mid: "#2e8b57"       // 均衡区域颜色（绿色）
+    },
+    
+    // 背景椭圆样式
+    bg: { opacity: 0.04, dash: "5,5" }
+};
+
+// ================================================================
+// 几何系统：用于标签布局碰撞检测
+// ================================================================
+
+/**
+ * GeometrySystem: 处理标签文字的碰撞检测和区域判断
+ */
+class GeometrySystem {
+    constructor() { 
+        this.grid = new Set();  // 已占用位置的网格集合
+    }
+    
+    /** 清空网格 */
+    clear() { this.grid.clear(); }
+    
+    /**
+     * 检测指定位置是否已被占用
+     * @param {number} x, y - 位置坐标
+     * @param {number} w, h - 文字边界框尺寸
+     * @param {number} p - 内边距
+     */
+    test(x, y, w, h, p) {
+        const res = 1;
+        // 计算网格范围
+        const x0 = Math.floor((x-w/2-p)/res), x1 = Math.ceil((x+w/2+p)/res);
+        const y0 = Math.floor((y-h/2-p)/res), y1 = Math.ceil((y+h/2+p)/res);
+        
+        // 检查是否已占用
+        for (let i=x0; i<=x1; i++)
+            for (let j=y0; j<=y1; j++)
+                if (this.grid.has(`${i}|${j}`)) return true;
+        
+        // 标记为已占用
+        for (let i=x0; i<=x1; i++)
+            for (let j=y0; j<=y1; j++)
+                this.grid.add(`${i}|${j}`);
+        return false;
+    }
+    
+    /**
+     * 判断点是否在椭圆内
+     * 椭圆方程: (x-cx)²/rx² + (y-cy)²/ry² ≤ 1
+     */
+    isInEllipse(x, y, e) {
+        return Math.pow(x-e.cx,2)/Math.pow(e.rx,2)
+             + Math.pow(y-e.cy,2)/Math.pow(e.ry,2) <= 1;
+    }
+    
+    /**
+     * 判断点是否在指定椭圆区域内
+     * zone 取值：C1, C2, C3, C1C2, C1C3, C2C3, ABC, mid
+     */
+    isInZone(x, y, zone, v) {
+        const centerIds = Object.keys(v).filter(k => k.startsWith('C'));
+        const inside = centerIds.filter(id => this.isInEllipse(x, y, v[id]));
+        const insideSet = new Set(inside);
+
+        // 均衡区域：需要在所有中心椭圆内
+        if (zone === 'mid' || zone === 'ABC') {
+            return centerIds.every(id => insideSet.has(id));
+        }
+
+        // zone 格式如 C1, C2, C3, C1C2, C1C3, C2C3
+        const zoneCenters = centerIds.filter(id => zone.includes(id));
+        if (zoneCenters.length === 0) return false;
+
+        // 严格匹配：在指定中心内，且不在其他中心内
+        const inAllZone = zoneCenters.every(id => insideSet.has(id));
+        const notInOthers = centerIds
+            .filter(id => !zoneCenters.includes(id))
+            .every(id => !insideSet.has(id));
+        return inAllZone && notInOthers;
+    }
+    
+    /**
+     * 判断文字是否完全在指定区域内
+     * @param {string} zone - 区域标识，支持新旧格式
+     */
+    checkZone(x, y, w, h, zone, v) {
+        const hw=w/2, hh=h/2;
+        // 检查文字边界框的四个角
+        const corners = [[x-hw,y-hh],[x+hw,y-hh],[x-hw,y+hh],[x+hw,y+hh]];
+        return corners.every(p => this.isInZone(p[0], p[1], zone, v));
+    }
+    
+    /**
+     * 获取某点的区域标识（判断在哪些椭圆内）
+     */
+    getZoneKey(x, y, v) {
+        const centerIds = Object.keys(v).filter(k => k.startsWith('C'));
+        const inside = centerIds.filter(id => this.isInEllipse(x, y, v[id]));
+        return inside.sort().join('');
+    }
+}
+
+// ================================================================
+// 标签文本处理：智能断行函数（供多处使用）
+// ================================================================
+
+const MAX_LABEL_LEN = 12;
+
+/**
+ * 从地址对象中提取区县级别的地址（省+市+区/县）
+ * @param {Object} addr - 高德地图地址组件对象
+ * @returns {string} 区县级别的地址字符串
+ */
+function getDistrictLevel(addr) {
+    if (!addr) return '';
+    const parts = [
+        addr.province,
+        addr.city,
+        addr.district || addr.county
+    ].filter(p => p && p.trim());
+    return parts.join('');
+}
+
+/**
+ * 基于地址组件的结构化断行
+ */
+function wrapByAddress(text, addr, maxLen) {
+    if (text.length <= maxLen) return [text];
+
+    // 有地址组件时，按层级拆分
+    if (addr) {
+        const parts = [
+            addr.province,  // 省
+            addr.city,      // 市
+            addr.district,  // 区
+            addr.township,  // 乡镇/街道
+            addr.neighborhood,  // 社区/小区
+            addr.building,      // 建筑
+            addr.street,        // 街道
+            addr.streetNumber   // 门牌号
+        ].filter(p => p && p.trim());
+
+        // 拼接行：逐段累加，超长时断行
+        const lines = [];
+        let current = '';
+        for (const part of parts) {
+            const candidate = current ? current + part : part;
+            if (candidate.length > maxLen && current) {
+                lines.push(current);
+                current = part;
+            } else {
+                current = candidate;
+            }
+        }
+        if (current) lines.push(current);
+        if (lines.length > 1) return lines;
+    }
+
+    // 无地址组件或拆分后仍超长：用规则断行兜底
+    return wrapByRules(text, maxLen);
+}
+
+/**
+ * 规则断行兜底：多优先级 + 短尾保护
+ */
+function wrapByRules(text, maxLen) {
+    if (text.length <= maxLen) return [text];
+    const BREAK_RULES = [
+        /[省市區縣镇鄉街道道]/,                           // level 1: 行政区划
+        /[山湖河江海岛灣桥路巷弄广场场馆园公园校寺庙塔亭院堂]/, // level 2: 地物建筑
+        /[东西南北中上下左右前后]/                          // level 3: 方位
+    ];
+    function findBreakPos(segment) {
+        for (let lvl = 0; lvl < BREAK_RULES.length; lvl++) {
+            for (let i = Math.min(maxLen, segment.length); i >= 2; i--) {
+                if (BREAK_RULES[lvl].test(segment[i - 1])) return i;
+            }
+        }
+        if (segment.length > maxLen && segment.length <= maxLen + 3) return segment.length;
+        return maxLen;
+    }
+    const lines = [];
+    let rest = text;
+    while (rest.length > maxLen) {
+        const breakAt = findBreakPos(rest);
+        lines.push(rest.substring(0, breakAt));
+        rest = rest.substring(breakAt);
+    }
+    if (rest.length > 0) lines.push(rest);
+    return lines;
+}
+
+/**
+ * 获取统一格式的标签文本（用于显示在一行的场景）
+ * 返回一个带换行信息的对象，包含主标签和后缀
+ */
+function getUniformLabel(name, addr, maxLen) {
+    const lines = wrapByAddress(name, addr, maxLen);
+    return {
+        main: lines.join('\n'),  // 用于中间维恩图（支持换行）
+        short: lines[0] || name  // 用于左侧/右侧单行显示
+    };
+}
+
+// ================================================================
+// 融合分类逻辑：统一处理时间差和时间区间模式
+// ================================================================
+
+/**
+ * 双中心分类函数（供三中心双交集判断和三中心模式复用）
+ * @param {number} timeA - 第一个中心的时间
+ * @param {number} timeB - 第二个中心的时间
+ * @param {number} tMin - 可达时间区间下限
+ * @param {number} tMax - 可达时间区间上限
+ * @param {number} dt - 时间差阈值
+ * @param {string} idA - 第一个中心ID
+ * @param {string} idB - 第二个中心ID
+ * @returns {'C1'|'C2'|'mid'|'none'} 区域分类结果
+ */
+function classifyTwoCenters(timeA, timeB, tMin, tMax, dt, idA, idB) {
+    const inRangeA = timeA >= tMin && timeA <= tMax;
+    const inRangeB = timeB >= tMin && timeB <= tMax;
+    const diff = Math.abs(timeA - timeB);
+
+    // 两者都在区间内
+    if (inRangeA && inRangeB) {
+        if (diff <= dt) {
+            return 'mid';  // 公平区域
+        }
+        // 时间差过大，返回时间更优的中心
+        return timeA <= timeB ? idA : idB;
+    }
+
+    // 仅A在区间内
+    if (inRangeA) {
+        return idA;
+    }
+
+    // 仅B在区间内
+    if (inRangeB) {
+        return idB;
+    }
+
+    // 两者都不在区间内
+    return 'none';
+}
+
+/**
+ * 三中心融合分类函数
+ * @param {Object} times - 各中心时间对象 { C1: num, C2: num, C3: num }
+ * @param {number} tMin - 可达时间区间下限
+ * @param {number} tMax - 可达时间区间上限
+ * @param {number} dt - 时间差阈值
+ * @param {string[]} centerIds - 中心ID数组 ['C1', 'C2', 'C3']
+ * @returns {string} 区域分类结果
+ */
+function classifyThreeCenters(times, tMin, tMax, dt, centerIds) {
+    const [idA, idB, idC] = centerIds;
+    const timeA = times[idA];
+    const timeB = times[idB];
+    const timeC = times[idC];
+    
+    // 获取各中心是否在区间内
+    const inRange = {
+        [idA]: timeA >= tMin && timeA <= tMax,
+        [idB]: timeB >= tMin && timeB <= tMax,
+        [idC]: timeC >= tMin && timeC <= tMax
+    };
+    
+    // 在区间内的中心
+    const inRangeCenters = centerIds.filter(id => inRange[id]);
+    
+    // 1. 判断三交集（ABC）
+    // 条件：三个中心都在区间，且两两时间差 <= dt
+    if (inRangeCenters.length === 3) {
+        const diffAB = Math.abs(timeA - timeB);
+        const diffAC = Math.abs(timeA - timeC);
+        const diffBC = Math.abs(timeB - timeC);
+        
+        if (diffAB <= dt && diffAC <= dt && diffBC <= dt) {
+            return 'ABC';  // 三交集
+        }
+    }
+    
+    // 2. 判断双交集（C1C2 / C1C3 / C2C3）
+    // 条件：两个中心在区间且差值<=dt，第三个中心不在区间或差值>dt
+    if (inRangeCenters.length >= 2) {
+        // 检查各双中心组合
+        const pairs = [
+            [idA, idB, idC],
+            [idA, idC, idB],
+            [idB, idC, idA]
+        ];
+        
+        for (const [id1, id2, id3] of pairs) {
+            const t1 = times[id1];
+            const t2 = times[id2];
+            const t3 = times[id3];
+            const diff12 = Math.abs(t1 - t2);
+            
+            // 如果前两个中心在区间且差值<=dt
+            if (inRange[id1] && inRange[id2] && diff12 <= dt) {
+                // 检查第三个中心是否不在区间或与任一中心差值>dt
+                const diff13 = Math.abs(t1 - t3);
+                const diff23 = Math.abs(t2 - t3);
+                
+                if (!inRange[id3] || diff13 > dt || diff23 > dt) {
+                    // 组合ID并排序
+                    const pairIds = [id1, id2].sort().join('');
+                    return pairIds;  // C1C2 / C1C3 / C2C3
+                }
+            }
+        }
+    }
+    
+    // 3. 判断单独区（C1 / C2 / C3）
+    // 条件：单个中心在区间，其余不满足
+    if (inRangeCenters.length === 1) {
+        return inRangeCenters[0];  // C1 / C2 / C3
+    }
+    
+    // 如果有2个中心在区间但差值>dt（不属于双交集的情况）
+    if (inRangeCenters.length === 2) {
+        // 找出哪个中心时间更优
+        let bestId = null;
+        let minTime = Infinity;
+        
+        for (const id of inRangeCenters) {
+            if (times[id] < minTime) {
+                minTime = times[id];
+                bestId = id;
+            }
+        }
+        
+        // 第三个中心不在区间或差值>dt，返回最优的中心
+        return bestId;
+    }
+    
+    // 4. 不可达（none）
+    return 'none';
+}
+
+/**
+ * 统一分类函数：根据模式和中心数自动选择分类逻辑
+ * @param {Object} d - POI数据对象
+ * @param {string} mode - 模式：'diff' | 'interval'
+ * @param {number} centerCount - 中心数量：2 | 3
+ * @param {string[]} centerIds - 中心ID数组
+ * @param {number} tMin - 可达时间区间下限
+ * @param {number} tMax - 可达时间区间上限
+ * @param {number} dt - 时间差阈值
+ * @returns {Object} 分类结果 { zone: string, mx: number, diff: number }
+ */
+function classifyPOI(d, mode, centerCount, centerIds, tMin, tMax, dt) {
+    const times = d.times;
+    const timeValues = centerIds.map(id => times[id]);
+    const mx = Math.max(...timeValues);
+    const minTime = Math.min(...timeValues);
+    const maxTime = Math.max(...timeValues);
+    const diff = maxTime - minTime;
+    
+    let zone = null;
+    
+    if (centerCount === 2) {
+        // 双中心模式
+        const [idA, idB] = centerIds;
+        const timeA = times[idA];
+        const timeB = times[idB];
+        
+        if (mode === 'interval') {
+            // 时间区间模式：直接使用区间判断
+            const result = classifyTwoCenters(timeA, timeB, tMin, tMax, dt, idA, idB);
+            if (result !== 'none') {
+                zone = result;
+            }
+        } else {
+            // 时间差模式：使用 tMax 作为上限
+            const result = classifyTwoCenters(timeA, timeB, 0, tMax, dt, idA, idB);
+            if (result !== 'none') {
+                zone = result;
+            }
+        }
+    } else {
+        // 三中心模式
+        if (mode === 'interval') {
+            // 时间区间模式
+            zone = classifyThreeCenters(times, tMin, tMax, dt, centerIds);
+        } else {
+            // 时间差模式：使用 tMax 作为上限，tMin=0
+            zone = classifyThreeCenters(times, 0, tMax, dt, centerIds);
+        }
+    }
+    
+    return { zone, mx, diff };
+}
+
+// ================================================================
+// 主渲染器：使用 D3.js 绑制维恩图
+// ================================================================
+
+const Painter = {
+    svg: null,           // D3 SVG 选择器
+    g: null,            // 主图形容器（用于应用缩放变换）
+    geo: new GeometrySystem(),  // 几何系统实例
+    v: {},              // 当前椭圆参数
+    mode: 'diff',   // 当前模式: 'interval' | 'diff'
+    isUpdating: false,   // 更新锁，防止并发调用
+
+    /**
+     * 初始化 SVG 画布和缩放功能
+     */
+    init() {
+        this.svg = d3.select("#viz-svg")
+            .attr("viewBox", `0 0 ${CONFIG.canvas.width} ${CONFIG.canvas.height}`);
+        this.g = this.svg.append("g");
+        
+        // 添加缩放/平移交互
+        this.svg.call(
+            d3.zoom().scaleExtent([0.4, 5])
+                .on("zoom", e => this.g.attr("transform", e.transform))
+        );
+    },
+
+    /**
+     * 更新可视化：根据当前数据和滑块值重新渲染
+     */
+    async update() {
+        // 如果正在更新，则跳过此次调用
+        if (this.isUpdating) return;
+        this.isUpdating = true;
+        
+        try {
+            this.g.selectAll("*").remove();  // 清空画布
+            this.geo.clear();               // 清空几何系统
+
+            // 无数据时显示空状态
+            if (RAW_DATA.length === 0) {
+                document.getElementById('empty-state').classList.remove('hidden');
+                ['pointA','mid','pointB'].forEach(z =>
+                    d3.select(`#count-${z}`).text('—'));
+                return;
+            }
+            document.getElementById('empty-state').classList.add('hidden');
+
+            const centerCount = getCenterCount();
+            const centerIds = getCenterIds();
+            let items;
+
+        // ========== 获取滑块参数 ==========
+        const dt = +document.getElementById('input-merged-dt').value;
+        const tMin = +document.getElementById('input-t-min').value;
+        const tMax = +document.getElementById('input-t-max').value;
+        
+        document.getElementById('val-tmax').textContent = `${tMin} – ${tMax} min`;
+        document.getElementById('val-dt').textContent   = `${dt} min`;
+        
+        // ========== 融合分类逻辑 ==========
+        // 使用 VennState 确定当前模式
+        const currentCenterCount = VennState.centerCount;
+        const activeCenterIds = currentCenterCount === 2 ? VennState.activeCenters : centerIds;
+        
+        // 使用统一的 classifyPOI 函数处理所有模式
+        items = RAW_DATA.map(d => {
+            const result = classifyPOI(d, this.mode, currentCenterCount, activeCenterIds, tMin, tMax, dt);
+            return { ...d, ...result };
+        }).filter(d => d.zone !== null && d.zone !== 'none');  // 过滤掉 none 区域
+
+        // ========== 统计各区域数量 ==========
+        const zoneCounts = {};
+        items.forEach(d => {
+            zoneCounts[d.zone] = (zoneCounts[d.zone] || 0) + 1;
+        });
+
+        // 计算密度调整后的显示数量
+        const displayCounts = {};
+        Object.keys(zoneCounts).forEach(zone => {
+            const densityKey = zone === 'mid' || zone === 'ABC' ? 'mid' : zone;
+            displayCounts[zone] = Math.ceil(zoneCounts[zone] * (State.density[densityKey] || 0.3));
+        });
+
+        // ========== 更新统计数字 ==========
+        // 使用动态统计渲染
+        try {
+            renderStatPanel();
+            updateStatCounts(zoneCounts, displayCounts);
+        } catch (e) {
+            console.error('[统计面板] 更新失败:', e);
+        }
+
+        // ========== 计算椭圆参数 ==========
+        const cx = CONFIG.canvas.width / 2;
+        const cy = CONFIG.canvas.height / 2;
+        
+        // 椭圆参数
+        const baseRx = CONFIG.ellipse.baseRx;
+        const baseRy = CONFIG.ellipse.baseRy;
+        const dynamicFactor = CONFIG.ellipse.dynamicFactor;
+        const overlapRatio = CONFIG.ellipse.overlapRatio;
+        
+        // 初始化椭圆容器
+        this.v = {};
+        
+        if (currentCenterCount === 2) {
+            // 双中心：两个椭圆左右分布
+            const totalDisplay = Object.values(displayCounts).reduce((a,b) => a+b, 0);
+            const rx = baseRx + Math.sqrt(totalDisplay) * dynamicFactor;
+            const ry = baseRy + Math.sqrt(totalDisplay) * dynamicFactor * 0.6;
+            const gap = baseRx * overlapRatio;
+            
+            this.v[activeCenterIds[0]] = { cx: cx - gap, cy, rx: Math.max(100, rx), ry: Math.max(80, ry) };
+            this.v[activeCenterIds[1]] = { cx: cx + gap, cy, rx: Math.max(100, rx), ry: Math.max(80, ry) };
+        } else {
+            // 三中心：三角形排列
+            const totalDisplay = Object.values(displayCounts).reduce((a,b) => a+b, 0);
+            const rx = baseRx + Math.sqrt(totalDisplay) * dynamicFactor;
+            const ry = baseRy + Math.sqrt(totalDisplay) * dynamicFactor * 0.6;
+            const spacing = baseRx * 1.2;
+            
+            // 三角形顶点位置
+            const topY = cy - spacing * 0.5;
+            const bottomY = cy + spacing * 0.5;
+            const halfWidth = spacing * 0.866;  // sqrt(3)/2
+            
+            this.v[activeCenterIds[0]] = { cx: cx, cy: topY, rx: Math.max(100, rx), ry: Math.max(80, ry) };
+            this.v[activeCenterIds[1]] = { cx: cx - halfWidth, cy: bottomY, rx: Math.max(100, rx), ry: Math.max(80, ry) };
+            this.v[activeCenterIds[2]] = { cx: cx + halfWidth, cy: bottomY, rx: Math.max(100, rx), ry: Math.max(80, ry) };
+        }
+
+        // ========== 绘制背景椭圆 ==========
+        this.drawBgMulti(activeCenterIds, cx, cy, displayCounts);
+
+        // ========== 分类和排序景点 ==========
+        const classify = (pool) => {
+            if (pool.length === 0) return [];
+            const sorted = [...pool].sort((a, b) => {
+                if (this.mode === 'interval') {
+                    return Math.min(...Object.values(a.times)) - Math.min(...Object.values(b.times));
+                } else {
+                    const aRange = Math.max(...Object.values(a.times)) - Math.min(...Object.values(a.times));
+                    const bRange = Math.max(...Object.values(b.times)) - Math.min(...Object.values(b.times));
+                    return aRange - bRange;
+                }
+            });
+            return sorted.map((d, i) => {
+                const ratio = i / Math.max(1, sorted.length);
+                let lvl = 2;
+                // 与基础文件统一：前20%为大标签，20%-50%为中标签，其余为小标签
+                if (i === 0 || ratio < 0.20) lvl = 0;
+                else if (ratio < 0.50) lvl = 1;
+                return { ...d, levelIdx: lvl };
+            });
+        };
+
+        // ========== 执行螺旋布局（确保渲染数量与统计一致） ==========
+        const allItems = [];
+        const sortedItems = classify(items);
+        
+        // 按优先级排序区域：ABC > mid > 各中心区域（双交集不渲染POI标签）
+        const zonePriority = ['ABC', 'mid', ...activeCenterIds].filter(z => displayCounts[z] > 0);
+        
+        // 按层级组织，渲染数量 = displayCounts（与统计一致）
+        // 先按区域分桶，每区域内按层级排序
+        const zoneBuckets = {};
+        zonePriority.forEach(zone => {
+            const zoneItems = sortedItems.filter(d => d.zone === zone);
+            const targetCount = displayCounts[zone] || 0;
+            zoneBuckets[zone] = zoneItems.slice(0, targetCount);  // 取前N个
+        });
+        
+        // 按层级（0大标签 → 1中标签 → 2小标签）收集，确保大标签优先渲染
+        [0, 1, 2].forEach(lvl => {
+            zonePriority.forEach(zone => {
+                const lvlItems = (zoneBuckets[zone] || []).filter(d => d.levelIdx === lvl);
+                lvlItems.forEach(item => {
+                    allItems.push({ item, zone });
+                });
+            });
+        });
+
+        const totalItems = allItems.length;
+        
+        // 显示渲染进度
+        this.showRenderProgress(0, totalItems);
+
+        // 计算各区域中心点
+        const zoneCenters = this.calculateZoneCenters(activeCenterIds, cx, cy);
+        
+        // 批量处理
+        const batchSize = 10;
+        for (let i = 0; i < allItems.length; i++) {
+            const { item, zone } = allItems[i];
+            const center = zoneCenters[zone] || { x: cx, y: cy };
+            const color = this.getZoneColor(zone, activeCenterIds);
+            const level = CONFIG.levels[item.levelIdx];
+            
+            this.executeLayoutMulti(item, center, color, zone, level);
+            if (i % batchSize === 0 || i === allItems.length - 1) {
+                this.showRenderProgress(i + 1, totalItems);
+                // 让UI有机会刷新
+                await new Promise(r => requestAnimationFrame(r));
+            }
+        }
+
+        } finally {
+            // 确保更新锁一定会被重置
+            this.isUpdating = false;
+        }
+
+        // 隐藏渲染进度
+        setTimeout(() => this.hideRenderProgress(), 100);
+    },
+
+    /**
+     * 显示渲染进度
+     */
+    showRenderProgress(current, total) {
+        if (!this.progressEl) {
+            this.progressEl = document.createElement('div');
+            this.progressEl.id = 'render-progress';
+            this.progressEl.style.cssText = `
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: rgba(0,0,0,0.8);
+                color: white;
+                padding: 20px 30px;
+                border-radius: 10px;
+                font-size: 14px;
+                z-index: 9999;
+                text-align: center;
+            `;
+            document.body.appendChild(this.progressEl);
+        }
+        const percent = Math.round((current / total) * 100);
+        this.progressEl.innerHTML = `
+            <div style="font-size:16px;margin-bottom:10px;">正在渲染标签</div>
+            <div style="font-size:24px;font-weight:bold;">${current} / ${total}</div>
+            <div style="margin-top:8px;color:#aaa;">${percent}%</div>
+            <div style="width:150px;height:6px;background:#333;border-radius:3px;margin-top:10px;">
+                <div style="width:${percent}%;height:100%;background:#4CAF50;border-radius:3px;transition:width 0.1s;"></div>
+            </div>
+        `;
+    },
+
+    /**
+     * 隐藏渲染进度
+     */
+    hideRenderProgress() {
+        if (this.progressEl) {
+            this.progressEl.style.opacity = '0';
+            this.progressEl.style.transition = 'opacity 0.3s';
+            setTimeout(() => {
+                this.progressEl.remove();
+                this.progressEl = null;
+            }, 300);
+        }
+    },
+
+    /**
+     * 螺旋布局算法：在指定区域内寻找可用位置放置标签
+     * @param {Object} d - 景点数据
+     * @param {Object} center - 区域中心点
+     * @param {string} color - 颜色
+     * @param {string} zone - 区域类型
+     * @param {Object} level - 字体级别配置
+     * @param {number} xMult - 水平扩展系数
+     * @param {boolean} looseZone - 是否启用宽松区域检测（允许中心点在区域内即可）
+     */
+    executeLayout(d, center, color, zone, level, xMult, looseZone = false) {
+        // 测量文字尺寸
+        const tmp = this.g.append("text")
+            .attr("font-size",level.size).style("font-weight",level.weight).text(d.text);
+        const bb = tmp.node().getBBox(); tmp.remove();
+        const w=bb.width, h=bb.height*0.65;  // 压缩行高，去掉字体自带的上下一半留白
+
+        // 阿基米德螺旋公式: r = factor * theta，限制最大半径让标签更紧凑
+        let theta=0, placed=false;
+        const maxRadius = CONFIG.spiral.maxRadius || 80;  // 默认80px
+        while (!placed && theta<CONFIG.spiral.maxTheta) {
+            const r = Math.min(CONFIG.spiral.factor * theta, maxRadius);  // 限制最大半径
+            const x = center.x + r*Math.cos(theta)*xMult;  // xMult 控制水平扩展
+            const y = center.y + r*Math.sin(theta);
+
+            // 检查是否在区域内且不与已有标签重叠
+            // looseZone=true时：只检查中心点是否在区域内（宽松模式）
+            // looseZone=false时：检查整个标签是否在区域内（严格模式）
+            const zoneOk = looseZone
+                ? this.isPointInZone(x, y, zone)
+                : this.geo.checkZone(x,y,w,h,zone,this.v);
+
+            if (zoneOk) {
+                if (!this.geo.test(x,y,w,h,level.padding)) {
+                    this.render(x,y,d,level.size,color,level.weight);
+                    placed=true;
+                }
+            }
+            theta += CONFIG.spiral.step;
+        }
+    },
+
+    /**
+     * 检查点是否在指定区域内（宽松版：只检查中心点）
+     */
+    isPointInZone(x, y, zone) {
+        // 使用通用的区域检查
+        return this.geo.isInZone(x, y, zone, this.v);
+    },
+
+    /**
+     * 计算各区域的中心位置
+     */
+    calculateZoneCenters(centerIds, cx, cy) {
+        const centers = {};
+        const centerCount = centerIds.length;
+        
+        if (centerCount === 2) {
+            const e1 = this.v[centerIds[0]];
+            const e2 = this.v[centerIds[1]];
+            
+            // 仅单一区域：各自椭圆的中心
+            centers[centerIds[0]] = { x: e1.cx, y: cy };
+            centers[centerIds[1]] = { x: e2.cx, y: cy };
+            // 交集区域：两椭圆中点
+            centers['mid'] = { x: (e1.cx + e2.cx) / 2, y: cy };
+        } else {
+            // 三中心
+            const e1 = this.v[centerIds[0]];
+            const e2 = this.v[centerIds[1]];
+            const e3 = this.v[centerIds[2]];
+            
+            // 三个椭圆各自的中心
+            centers[centerIds[0]] = { x: e1.cx, y: e1.cy };
+            centers[centerIds[1]] = { x: e2.cx, y: e2.cy };
+            centers[centerIds[2]] = { x: e3.cx, y: e3.cy };
+            
+            // 两两交集：各对椭圆的中点
+            centers['C1C2'] = { x: (e1.cx + e2.cx) / 2, y: (e1.cy + e2.cy) / 2 };
+            centers['C1C3'] = { x: (e1.cx + e3.cx) / 2, y: (e1.cy + e3.cy) / 2 };
+            centers['C2C3'] = { x: (e2.cx + e3.cx) / 2, y: (e2.cy + e3.cy) / 2 };
+            
+            // 三中心交集：三角形重心
+            centers['ABC'] = { 
+                x: (e1.cx + e2.cx + e3.cx) / 3, 
+                y: (e1.cy + e2.cy + e3.cy) / 3 
+            };
+            centers['mid'] = centers['ABC'];
+        }
+        
+        return centers;
+    },
+
+
+    /**
+     * 获取区域颜色
+     */
+    getZoneColor(zone, centerIds) {
+        // ABC或mid区域用绿色
+        if (zone === 'ABC' || zone === 'mid') return CONFIG.colors.mid;
+        
+        // 单一中心区域：使用动态颜色
+        if (centerIds.includes(zone)) {
+            return getCenterColor(zone);
+        }
+        
+        // 两两交集区域：混合色
+        if (zone.includes('C')) {
+            const parts = zone.match(/C\d/g) || [];
+            if (parts.length === 2) {
+                // 混合两种颜色
+                return '#8B5CF6';  // 紫色表示两两交集
+            }
+        }
+        
+        return '#666';
+    },
+
+    /**
+     * 绘制多中心背景椭圆
+     * @param {Array} centerIds - 中心ID数组
+     * @param {number} cx, cy - 画布中心
+     * @param {Object} displayCounts - 各区域显示数量
+     */
+    drawBgMulti(centerIds, cx, cy, displayCounts = {}) {
+        const centerCount = centerIds.length;
+        const hoveredZone = VennState.hoveredZone;
+        
+        // 绘制各中心椭圆（带浅色填充，叠加区域自然变色）
+        centerIds.forEach((id, idx) => {
+            const e = this.v[id];
+            const isHighlighted = VennState.isHighlighted(id);
+            const isGrayed = VennState.isGrayed(id);
+            const color = getCenterColor(id);
+            
+            this.g.append("ellipse")
+                .attr("cx", e.cx).attr("cy", e.cy)
+                .attr("rx", e.rx).attr("ry", e.ry)
+                .attr("fill", color)
+                .attr("fill-opacity", isGrayed ? 0.02 : (isHighlighted ? 0.15 : 0.05))
+                .attr("stroke", color)
+                .attr("stroke-width", isHighlighted ? 3 : 1.5)
+                .attr("stroke-dasharray", CONFIG.bg.dash)
+                .attr("stroke-opacity", isGrayed ? 0.2 : (isHighlighted ? 0.9 : 0.5))
+                .style("cursor", "pointer")
+                .on("mouseenter", () => VennState.setHoveredZone(id))
+                .on("mouseleave", () => VennState.setHoveredZone(null));
+        });
+
+        if (centerCount === 2) {
+            // ========== 双中心：原始逻辑（椭圆上方同一水平线） ==========
+            const spacing = CONFIG.ellipse.baseRx * 1.1;
+            const lA = State.centers[0]?.name || centerIds[0];
+            const lB = State.centers[1]?.name || centerIds[1];
+            const [c1, c2] = centerIds;
+            const c1Color = getCenterColor(c1);
+            const c2Color = getCenterColor(c2);
+
+            // 绘制交集区域覆盖层（点击切换）
+            const overlap = this._drawOverlapOverlay(cx, cy, this.v[c1], this.v[c2], 'mid');
+            if (overlap) {
+                overlap
+                    .style("cursor", "pointer")
+                    .on("mouseenter", () => VennState.setHoveredZone('mid'))
+                    .on("mouseleave", () => VennState.setHoveredZone(null));
+            }
+
+            const labelConfigs = [
+                {x: cx - spacing, name: lA, addr: State.centers.find(c => c.id === c1)?.addr || null, color: c1Color, zone: c1},
+                {x: cx,          name: '均衡区域', addr: null, color: CONFIG.colors.mid, zone: 'mid'},
+                {x: cx + spacing, name: lB, addr: State.centers.find(c => c.id === c2)?.addr || null, color: c2Color, zone: c2}
+            ];
+
+            const maxLines = Math.max(...labelConfigs.map(cfg => wrapByAddress(cfg.name, cfg.addr, MAX_LABEL_LEN).length));
+            const LINE_HEIGHT = 20;
+            const extraOffset = Math.max(0, maxLines - 1) * LINE_HEIGHT;
+            const labelY = cy - Math.max(this.v[centerIds[0]].ry, this.v[centerIds[1]].ry) - 40 - extraOffset;
+
+            labelConfigs.forEach(cfg => {
+                const lines = wrapByAddress(cfg.name, cfg.addr, MAX_LABEL_LEN);
+                
+                const isHighlighted = VennState.isHighlighted(cfg.zone);
+                const isGrayed = VennState.isGrayed(cfg.zone);
+
+                const textEl = this.g.append("text")
+                    .attr("x", cfg.x).attr("y", labelY)
+                    .attr("text-anchor", "middle")
+                    .attr("fill", isGrayed ? '#ccc' : cfg.color)
+                    .style("font-size", "16px").style("font-weight", "600")
+                    .style("opacity", isGrayed ? 0.5 : (isHighlighted ? 1.2 : 1));
+
+                lines.forEach((line, i) => {
+                    textEl.append("tspan")
+                        .attr("x", cfg.x)
+                        .attr("dy", i === 0 ? "0" : "1.2em")
+                        .text(line);
+                });
+            });
+        } else {
+            // ========== 三中心：标签在椭圆外侧 + 共享区域碰撞检测 ==========
+            const [c1, c2, c3] = centerIds;
+            
+            // 绘制双交集透明点击热区（无描边）
+            const pairs = [
+                {ids: [c1, c2], zone: 'C1C2'},
+                {ids: [c1, c3], zone: 'C1C3'},
+                {ids: [c2, c3], zone: 'C2C3'}
+            ];
+            
+            pairs.forEach(({ids, zone}) => {
+                const overlap = this._drawOverlapOverlay(cx, cy, this.v[ids[0]], this.v[ids[1]], zone);
+                if (overlap) {
+                    overlap
+                        .attr("fill", "none")
+                        .attr("stroke", "none")
+                        .style("cursor", "pointer")
+                        .on("mouseenter", () => VennState.setHoveredZone(zone))
+                        .on("mouseleave", () => VennState.setHoveredZone(null))
+                        .on("click", () => VennState.switchToTwoCenters(ids[0], ids[1]));
+                }
+            });
+            
+            // 绘制三交集透明点击热区（ABC，无描边）
+            const abcOverlap = this._drawTripleOverlap(this.v[c1], this.v[c2], this.v[c3]);
+            if (abcOverlap) {
+                abcOverlap
+                    .attr("fill", "none")
+                    .attr("stroke", "none")
+                    .style("cursor", "pointer")
+                    .on("mouseenter", () => VennState.setHoveredZone('ABC'))
+                    .on("mouseleave", () => VennState.setHoveredZone(null));
+            }
+
+            // 计算各区域名称标签的外部位置
+            const labelPos = this.calculateOutsideLabelPos(centerIds, cx, cy);
+
+            this._drawCenterLabel(labelPos['C1'], getCenterLabel(c1), getCenterColor(c1));
+            this._drawCenterLabel(labelPos['C2'], getCenterLabel(c2), getCenterColor(c2));
+            this._drawCenterLabel(labelPos['C3'], getCenterLabel(c3), getCenterColor(c3));
+
+            // 共享区域：三交集标签由 calculateVennLabelPositions + zoneLabels 统一绘制
+        }
+    },
+    
+    /**
+     * 绘制两椭圆交集覆盖层
+     */
+    _drawOverlapOverlay(cx, cy, e1, e2, zone) {
+        // 计算交集区域边界
+        const overlap = this._calculateIntersection(e1, e2);
+        if (!overlap) return null;
+        
+        const { x, y, rx, ry } = overlap;
+        return this.g.append("ellipse")
+            .attr("cx", x).attr("cy", y)
+            .attr("rx", rx).attr("ry", ry)
+            .attr("fill", "transparent");
+    },
+    
+    /**
+     * 计算两椭圆交集区域
+     */
+    _calculateIntersection(e1, e2) {
+        const dist = Math.sqrt(Math.pow(e2.cx - e1.cx, 2) + Math.pow(e2.cy - e1.cy, 2));
+        const r1 = Math.min(e1.rx, e1.ry) * 0.8;
+        const r2 = Math.min(e2.rx, e2.ry) * 0.8;
+        
+        // 如果不相交，返回null
+        if (dist > r1 + r2) return null;
+        
+        // 计算交集中心（近似）
+        const x = (e1.cx + e2.cx) / 2;
+        const y = (e1.cy + e2.cy) / 2;
+        const rx = Math.min(r1, r2) * 0.5;
+        const ry = Math.min(e1.rx, e2.rx, e1.ry, e2.ry) * 0.4;
+        
+        return { x, y, rx, ry };
+    },
+    
+    /**
+     * 绘制三椭圆交集覆盖层
+     */
+    _drawTripleOverlap(e1, e2, e3) {
+        // 计算三角形重心作为三交集中心
+        const cx = (e1.cx + e2.cx + e3.cx) / 3;
+        const cy = (e1.cy + e2.cy + e3.cy) / 3;
+        const minRx = Math.min(e1.rx, e2.rx, e3.rx) * 0.3;
+        const minRy = Math.min(e1.ry, e2.ry, e3.ry) * 0.3;
+        
+        return this.g.append("ellipse")
+            .attr("cx", cx).attr("cy", cy)
+            .attr("rx", minRx).attr("ry", minRy)
+            .attr("fill", "transparent");
+    },
+
+    /**
+     * 绘制区域中心标注
+     */
+    _drawCenterLabel(pos, label, color, isCenter) {
+        if (!pos) return;
+        const lines = wrapByAddress(label, null, MAX_LABEL_LEN);
+        const lineCount = lines.length;
+
+        // 如果 pos.isBaseline 为 true，pos.y 直接作为 text 的 y（基线）
+        // 否则按旧逻辑：pos.y 是视觉中心，计算 startY
+        const startY = pos.isBaseline ? pos.y : pos.y - lineCount * 9 + 7;
+
+        const textEl = this.g.append("text")
+            .attr("x", pos.x)
+            .attr("y", startY)
+            .attr("text-anchor", "middle")
+            .attr("fill", color)
+            .style("font-size", isCenter ? "16px" : "13px")
+            .style("font-weight", isCenter ? "600" : "500");
+
+        lines.forEach((line, i) => {
+            textEl.append("tspan")
+                .attr("x", pos.x)
+                .attr("dy", i === 0 ? "0" : "1.2em")
+                .text(line);
+        });
+    },
+
+    /**
+     * 计算三中心区域名称标签的外部位置
+     * C1: 正上方外侧；C2: 左下外侧；C3: 右下外侧
+     */
+    calculateOutsideLabelPos(centerIds, cx, cy) {
+        const pos = {};
+        pos['ABC'] = { x: cx, y: cy };  // 三椭圆交集中心
+
+        centerIds.forEach((id, i) => {
+            const e = this.v[id];
+            const label = State.centers.find(c => c.id === id)?.name || id;
+            const lines = wrapByAddress(label, null, MAX_LABEL_LEN);
+            const totalH = lines.length * 18;
+            const GAP = 6;  // 文字与椭圆的间隙
+
+            if (i === 0) {
+                // C1: 正上方，pos.y 直接作为 text 基线传入
+                // 基线位置使文字底部接近椭圆顶部上方 GAP 处
+                pos[id] = { x: e.cx, y: e.cy - e.ry - GAP - (totalH - 20), isBaseline: true };
+            } else {
+                // C2/C3: 正下方，pos.y 直接作为 text 基线传入
+                // 基线位置使文字顶部在椭圆底部下方 GAP 处
+                // ascent ≈ 11px (13px字体)
+                pos[id] = { x: e.cx, y: e.cy + e.ry + GAP + 11, isBaseline: true };
+            }
+        });
+
+        return pos;
+    },
+
+    /**
+     * 计算Venn图内7个区域的标签位置
+     */
+    calculateVennLabelPositions(centerIds, cx, cy) {
+        const [c1, c2, c3] = centerIds;
+        const e1 = this.v[c1], e2 = this.v[c2], e3 = this.v[c3];
+        const pos = {};
+        
+        // 三个圆各自的圆心位置（用于各中心区域标签）
+        pos['C1'] = { x: e1.cx, y: e1.cy };
+        pos['C2'] = { x: e2.cx, y: e2.cy };
+        pos['C3'] = { x: e3.cx, y: e3.cy };
+        
+        // 两两交集区域中心（两圆心连线的中点向内偏移）
+        const getMidOffset = (ea, eb, factor = 0.15) => {
+            const mx = (ea.cx + eb.cx) / 2;
+            const my = (ea.cy + eb.cy) / 2;
+            const dx = eb.cx - ea.cx;
+            const dy = eb.cy - ea.cy;
+            const len = Math.sqrt(dx*dx + dy*dy) || 1;
+            return {
+                x: mx - dx * factor,
+                y: my - dy * factor
+            };
+        };
+        
+        pos['C1C2'] = getMidOffset(e1, e2, 0.1);
+        pos['C1C3'] = getMidOffset(e1, e3, 0.1);
+        pos['C2C3'] = getMidOffset(e2, e3, 0.1);
+        
+        // 三交集中心（三角形重心）
+        pos['ABC'] = {
+            x: (e1.cx + e2.cx + e3.cx) / 3,
+            y: (e1.cy + e2.cy + e3.cy) / 3
+        };
+        
+        return pos;
+    },
+
+    /**
+     * 检测矩形是否与椭圆相交
+     * @param {number} rectX, rectY - 矩形左上角
+     * @param {number} rectW, rectH - 矩形宽高
+     * @param {Object} ellipse - 椭圆参数 {cx, cy, rx, ry}
+     */
+    isRectOverlapsEllipse(rectX, rectY, rectW, rectH, ellipse) {
+        // 检查矩形四个角是否在椭圆内
+        const corners = [
+            [rectX, rectY], [rectX + rectW, rectY],
+            [rectX, rectY + rectH], [rectX + rectW, rectY + rectH]
+        ];
+        const insideCount = corners.filter(c => this.geo.isInEllipse(c[0], c[1], ellipse)).length;
+        return insideCount > 0;  // 任一角在椭圆内即重叠
+    },
+
+    /**
+     * 绘制区域中心标注（用于共享区域）
+     * 直接绘制在中心位置，不做碰撞检测（碰撞由POI标签的螺旋布局处理）
+     */
+    _drawCenterLabelWithCollision(center, label, color, isCenter) {
+        if (!center) return;
+        const lines = wrapByAddress(label, null, MAX_LABEL_LEN);
+        const lineCount = lines.length;
+        const totalH = lineCount * 18;
+        
+        // 直接使用中心位置，与 _drawCenterLabel 保持一致
+        const posX = center.x;
+        const posY = center.y - totalH / 2 + 7;
+
+        const textEl = this.g.append("text")
+            .attr("x", posX)
+            .attr("y", posY)
+            .attr("text-anchor", "middle")
+            .attr("fill", color)
+            .style("font-size", isCenter ? "16px" : "13px")
+            .style("font-weight", isCenter ? "600" : "500");
+
+        lines.forEach((line, i) => {
+            textEl.append("tspan")
+                .attr("x", posX)
+                .attr("dy", i === 0 ? "0" : "1.2em")
+                .text(line);
+        });
+    },
+
+    /**
+     * 多中心螺旋布局
+     */
+    executeLayoutMulti(d, center, color, zone, level) {
+        const tmp = this.g.append("text")
+            .attr("font-size", level.size).style("font-weight", level.weight).text(d.text);
+        const bb = tmp.node().getBBox(); tmp.remove();
+        const w = bb.width, h = bb.height * 0.65;
+
+        let theta = 0, placed = false;
+        while (!placed && theta < CONFIG.spiral.maxTheta) {
+            const r = CONFIG.spiral.factor * theta;
+            const x = center.x + r * Math.cos(theta);
+            const y = center.y + r * Math.sin(theta);
+
+            if (this.geo.checkZone(x, y, w, h, zone, this.v)) {
+                if (!this.geo.test(x, y, w, h, level.padding)) {
+                    this.renderMulti(x, y, d, level.size, color, level.weight, level.opacity);
+                    placed = true;
+                }
+            }
+            theta += CONFIG.spiral.step;
+        }
+    },
+
+    /**
+     * 绘制背景椭圆和区域标签（兼容双中心）
+     */
+    drawBg(cx, cy, cA, cM, cB) {
+        const centerIds = getCenterIds();
+        const dc = {}; [cA, cM, cB].forEach((v, i) => { dc[centerIds[i] || ['mid','pointA','pointB'][i]] = v; });
+        this.drawBgMulti(centerIds, cx, cy, dc);
+    },
+
+    /**
+     * 渲染单个景点标签
+     * @param {number} opacity - 文字透明度（层级决定）
+     */
+    render(x, y, d, size, color, weight, opacity = 1) {
+        const diff = d.diff;
+        const centerIds = getCenterIds();
+        const centerCount = centerIds.length;
+        
+        // 构建时间行HTML
+        let timeRows = '';
+        if (d.times) {
+            timeRows = centerIds.map(id => {
+                const label = State.centers.find(c => c.id === id)?.name || id;
+                const time = d.times[id];
+                return `<div class="tip-row"><span>${label}</span><span>${time} min</span></div>`;
+            }).join('');
+        } else {
+            // 兼容旧格式
+            timeRows = `
+                <div class="tip-row"><span>${State.labelA}</span><span>${d.timeA} min</span></div>
+                <div class="tip-row"><span>${State.labelB}</span><span>${d.timeB} min</span></div>
+            `;
+        }
+        
+        // 构建差异提示
+        let diffText = '';
+        if (diff !== undefined) {
+            if (centerCount === 2) {
+                const closer = diff > 0 ? State.labelA : State.labelB;
+                const absDiff = Math.abs(diff);
+                const diffColor = diff > 0 ? 'var(--whu-color)' : 'var(--hub-color)';
+                diffText = `<div class="tip-diff" style="color:${diffColor}">${closer}更近 ${absDiff}min</div>`;
+            } else if (centerCount === 3) {
+                const times = Object.values(d.times);
+                const min = Math.min(...times);
+                const max = Math.max(...times);
+                const range = max - min;
+                diffText = `<div class="tip-diff">时间差 ${range}min</div>`;
+            }
+        }
+
+        this.g.append("text")
+            .attr("x",x).attr("y",y)
+            .attr("fill",color)
+            .attr("fill-opacity", opacity)
+            .attr("font-size",size)
+            .attr("text-anchor","middle")
+            .attr("dominant-baseline","middle")
+            .style("font-weight",weight)
+            .text(d.text)
+            // 鼠标悬浮显示详情
+            .on("mouseover",(e)=>{
+                const tooltip = d3.select("#tooltip");
+                tooltip.style("opacity",1)
+                    .html(`<div class="tip-title">${d.text}</div>
+                           ${timeRows}
+                           ${diffText}`);
+                tooltip.style("left", (e.clientX + 4) + "px").style("top", (e.clientY + 4) + "px");
+            })
+            .on("mousemove",(e)=>{
+                d3.select("#tooltip").style("left", (e.clientX + 4) + "px").style("top", (e.clientY + 4) + "px");
+            })
+            .on("mouseout",()=>{ d3.select("#tooltip").style("opacity",0); });
+    },
+    
+    /**
+     * 多中心渲染（带完整tooltip）
+     */
+    renderMulti(x, y, d, size, color, weight, opacity = 1) {
+        const centerIds = getCenterIds();
+        
+        // 构建tooltip内容
+        let timeRows = centerIds.map(id => {
+            const label = getCenterLabel(id);
+            const time = d.times ? d.times[id] : 0;
+            return `<div class="tip-row"><span>${label}</span><span>${time} min</span></div>`;
+        }).join('');
+        
+        // 计算时间差异
+        const times = Object.values(d.times);
+        const minTime = Math.min(...times);
+        const maxTime = Math.max(...times);
+        const diff = maxTime - minTime;
+        
+        let diffText = '';
+        if (centerIds.length === 2) {
+            const diffVal = d.times[centerIds[1]] - d.times[centerIds[0]];
+            const closer = diffVal > 0 ? getCenterLabel(centerIds[0]) : getCenterLabel(centerIds[1]);
+            const diffColor = diffVal > 0 ? getCenterColor(centerIds[0]) : getCenterColor(centerIds[1]);
+            diffText = `<div class="tip-diff" style="color:${diffColor}">${closer}更近 ${Math.abs(diffVal)}min</div>`;
+        } else {
+            diffText = `<div class="tip-diff">时间差 ${diff}min</div>`;
+        }
+
+        this.g.append("text")
+            .attr("x", x).attr("y", y)
+            .attr("fill", color)
+            .attr("fill-opacity", opacity)
+            .attr("font-size", size)
+            .attr("text-anchor", "middle")
+            .attr("dominant-baseline", "middle")
+            .style("font-weight", weight)
+            .text(d.text)
+            .on("mouseover", (e) => {
+                const tooltip = d3.select("#tooltip");
+                tooltip.style("opacity", 1)
+                    .html(`<div class="tip-title">${d.text}</div>
+                           ${timeRows}
+                           ${diffText}`);
+                tooltip.style("left", (e.clientX + 4) + "px").style("top", (e.clientY + 4) + "px");
+            })
+            .on("mousemove", (e) => {
+                d3.select("#tooltip").style("left", (e.clientX + 4) + "px").style("top", (e.clientY + 4) + "px");
+            })
+            .on("mouseout", () => { d3.select("#tooltip").style("opacity", 0); });
+    }
+};
+
+// ================================================================
+// 地图初始化
+// ================================================================
+
+/**
+ * MAP_KEY: 高德地图 Web API Key
+ * 请替换为你的有效 Key
+ */
+// 高德地图 API Key
+const MAP_KEY = '6f9f86d35ef09e253fb073c286f5409a';
+
+// 高德地图安全密钥（用于 JS API 2.0）
+window._AMapSecurityConfig = {
+    securityJsCode: 'b410b9ccb3faf2352eb988ed9352bfc7',  // 安全密钥
+};
+
+/**
+ * 动态加载外部脚本
+ * @param {string} src - 脚本 URL
+ * @returns {Promise}
+ */
+function loadScript(src) {
+    return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('脚本加载失败: ' + src));
+        document.head.appendChild(s);
+    });
+}
+
+/**
+ * 初始化高德地图
+ * 异步加载 JS API → 创建地图实例 → 绑定点击事件
+ */
+async function initMap() {
+    const wrap = document.getElementById('amap-wrap');
+    const loading = document.getElementById('map-loading');
+    const error   = document.getElementById('map-error');
+    const hint    = document.getElementById('pick-hint');
+
+    try {
+        console.log('[AMap] 开始加载，Key:', MAP_KEY);
+        
+        // 1. 加载高德 JS API（不包含插件，后续按需加载）
+        await loadScript(`https://webapi.amap.com/maps?v=2.0&key=${MAP_KEY}`);
+        console.log('[AMap] 脚本加载完成');
+
+        // 2. 等待 AMap 全局对象就绪
+        await new Promise((resolve, reject) => {
+            let attempts = 0;
+            const check = () => {
+                attempts++;
+                if (typeof AMap !== 'undefined' && AMap.Map) {
+                    console.log('[AMap] AMap 就绪');
+                    resolve();
+                } else if (attempts > 100) {
+                    reject(new Error('AMap 对象加载超时'));
+                } else {
+                    setTimeout(check, 100);
+                }
+            };
+            check();
+        });
+
+        console.log('[AMap] 开始创建地图');
+
+        // 3. 创建地图实例
+        State.map = new AMap.Map('amap-wrap', {
+            zoom: 12,                              // 缩放级别 12
+            center: [114.31, 30.58],              // 武汉中心点 [经度, 纬度]
+            mapStyle: 'amap://styles/whitesmoke'  // 浅色地图风格
+        });
+        console.log('[AMap] 地图实例已创建');
+
+        // 4. 预先加载所有插件（在地图创建后）
+        console.log('[AMap] 开始加载插件…');
+        await Promise.all([
+            new Promise(resolve => AMap.plugin('AMap.PlaceSearch', () => { console.log('[AMap] PlaceSearch 插件加载完成'); resolve(); })),
+            new Promise(resolve => AMap.plugin('AMap.Driving', () => { console.log('[AMap] Driving 插件加载完成'); resolve(); })),
+            new Promise(resolve => AMap.plugin('AMap.Geocoder', () => { console.log('[AMap] Geocoder 插件加载完成'); resolve(); })),
+            new Promise(resolve => AMap.plugin('AMap.AutoComplete', () => { console.log('[AMap] AutoComplete 插件加载完成'); resolve(); }))
+        ]);
+        console.log('[AMap] 所有插件加载完成');
+
+        // 5. 地图加载完成后显示
+        State.map.on('complete', () => {
+            console.log('[AMap] 地图渲染完成');
+            wrap.style.opacity = '1';
+            loading.classList.add('hidden');
+            hint.classList.remove('hidden');
+            document.getElementById('map-container').style.borderColor = '#9e9e9e';
+            document.getElementById('map-container').style.borderStyle = 'solid';
+        });
+
+        // 6. 绑定地图点击事件用于选点
+        State.map.on('click', (e) => {
+            const lnglat = [e.lnglat.getLng(), e.lnglat.getLat()];
+            const step = State.pickStep;
+            if (step !== null && step < 3) {
+                setCenterPoint(step, lnglat);
+            }
+        });
+
+        State.ready = true;
+        updateUI();
+        
+        // 初始化自动完成搜索
+        initAutoComplete();
+
+    } catch (err) {
+        console.error('[AMap] 初始化失败:', err);
+        loading.classList.add('hidden');
+        error.classList.add('show');
+        document.getElementById('map-error-msg').textContent =
+            '地图加载失败：' + err.message + '。请检查网络，或确认 API Key 有效且已配置白名单。';
+    }
+}
+
+// ================================================================
+// 选点逻辑
+// ================================================================
+
+/**
+ * 创建自定义图钉图标（SVG 编码为 Data URL）
+ * @param {string} label - 标签文字 'A', 'B', 'C' 或数字 '1', '2', '3'
+ * @param {string} bg - 背景色
+ * @param {string} fg - 前景色
+ */
+function makeIcon(label, bg, fg) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="48" viewBox="0 0 36 48">
+        <filter id="shadow"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity="0.25"/></filter>
+        <g filter="url(#shadow)">
+            <path d="M18 0C8.06 0 0 8.06 0 18c0 12.6 18 30 18 30s18-17.4 18-30C36 8.06 27.94 0 18 0z" fill="${bg}"/>
+            <circle cx="18" cy="16" r="12" fill="white" fill-opacity="0.25"/>
+            <text x="18" y="22" text-anchor="middle" font-size="14" font-weight="700" fill="${fg}">${label}</text>
+        </g>
+    </svg>`;
+    return new AMap.Icon({ 
+        size: new AMap.Size(36,48), 
+        imageSize: new AMap.Size(36,48),
+        image: 'data:image/svg+xml;base64,' + btoa(svg) 
+    });
+}
+
+/**
+ * 更新搜索范围圆圈：在地图上显示各中心点的搜索区域
+ * 当中心点或搜索半径改变时调用
+ */
+function updateSearchCircles() {
+    if (!State.map) {
+        console.log('[圆圈更新] 地图未初始化');
+        return;
+    }
+    
+    const radius = +document.getElementById('input-radius').value * 1000;  // km → m
+    console.log('[圆圈更新] 开始更新，半径:', radius, '米');
+    
+    try {
+        // 清空所有旧圆圈
+        State.circles.forEach(c => c.setMap(null));
+        State.circles = [];
+        
+        const circles = [];
+        const markers = [];
+        
+        // 为每个有坐标的中心创建圆圈
+        State.centers.forEach((center, idx) => {
+            if (center.lnglat) {
+                const circle = new AMap.Circle({
+                    center: center.lnglat,
+                    radius: radius,
+                    strokeColor: center.color,
+                    strokeWeight: 2,
+                    strokeOpacity: 0.8,
+                    fillColor: center.color,
+                    fillOpacity: 0.1,
+                    zIndex: 10,
+                    bubble: true
+                });
+                circle.setMap(State.map);
+                State.circles.push(circle);
+                circles.push(circle);
+                if (center.marker) markers.push(center.marker);
+                console.log('[圆圈更新] ' + center.id + '圆圈已创建');
+            }
+        });
+        
+        // 调整地图视野以显示所有圆圈和标记
+        if (circles.length > 0) {
+            State.map.setFitView([...circles, ...markers], false, [60,60,60,60]);
+            console.log('[圆圈更新] 已调整地图视野（显示' + circles.length + '个圆圈）');
+        }
+    } catch (e) {
+        console.error('[圆圈更新] 错误:', e);
+    }
+}
+
+/**
+ * 统一设置中心点位置
+ * @param {number} idx - 中心索引（0=C1, 1=C2, 2=C3）
+ * @param {Array} lnglat - [经度, 纬度]
+ * @param {string} [name] - 可选：直接传入地点名称（如从搜索结果选择时）
+ */
+function setCenterPoint(idx, lnglat, name) {
+    // 确保数组有足够长度
+    while (State.centers.length <= idx) {
+        addCenter(null, null, null);
+    }
+    
+    const center = State.centers[idx];
+    center.lnglat = lnglat;
+    
+    // 移除旧的标记
+    if (center.marker) center.marker.setMap(null);
+    
+    // 创建新标记（使用数字1,2,3作为标签）
+    const labelNum = idx + 1;
+    center.marker = new AMap.Marker({ 
+        position: lnglat, 
+        icon: makeIcon(labelNum.toString(), center.color, '#fff'), 
+        offset: new AMap.Pixel(-18,-48)
+    });
+    center.marker.setMap(State.map);
+
+    // 更新卡片显示
+    updateCenterCard(idx);
+
+    // 如果直接传入了名称，直接使用；否则进行逆地理编码
+    if (name) {
+        const short = name.replace(/^(省|市|区|县)+/, '');
+        const fullName = short || name;
+        center.name = fullName;
+        center.addr = null;
+        updateDynamicLabels();
+    } else {
+        // 逆地理编码：获取位置名称和地址组件
+        reverseGeocode(lnglat, (el, addr) => {
+            const short = el.replace(/^(省|市|区|县)+/, '');
+            const fullName = short || el || center.id;
+            center.name = fullName;
+            center.addr = addr;
+            updateDynamicLabels();
+            updateCenterCard(idx);
+            renderCenterList();
+        });
+    }
+
+    // 更新选点步骤
+    if (State.centers.length < 3) {
+        State.pickStep = State.centers.length;
+    } else {
+        State.pickStep = null;
+    }
+    
+    updateUI();
+    updateSearchCircles();
+}
+
+/**
+ * 设置 A 点位置（兼容函数）
+ */
+function setPointA(lnglat, name) {
+    setCenterPoint(0, lnglat, name);
+}
+
+/**
+ * 设置 B 点位置（兼容函数）
+ */
+function setPointB(lnglat, name) {
+    setCenterPoint(1, lnglat, name);
+}
+
+// ================================================================
+// 逆地理编码：根据坐标获取地址名称
+// ================================================================
+
+/**
+ * 逆地理编码：根据坐标获取地址名称
+ * @param {Array} lnglat - [经度, 纬度]
+ * @param {Function} cb - 回调函数，接收地址字符串
+ */
+function reverseGeocode(lnglat, cb) {
+    AMap.plugin('AMap.Geocoder', () => {
+        const g = new AMap.Geocoder();
+        g.getAddress(lnglat, (status, result) => {
+            if (status === 'complete' && result.regeocode) {
+                const addr = result.regeocode.addressComponent || null;
+                cb(result.regeocode.formattedAddress, addr);
+            } else {
+                cb('未知位置', null);
+            }
+        });
+    });
+}
+
+// ================================================================
+// 地点搜索建议功能
+// ================================================================
+
+let autoComplete = null;  // 自动完成实例
+
+/**
+ * 初始化自动完成搜索
+ */
+function initAutoComplete() {
+    if (!State.ready) return;
+    autoComplete = new AMap.AutoComplete({
+        city: '全国',        // 默认搜索全国
+        datatype: 'poi'      // 搜索 POI 点
+    });
+    console.log('[AutoComplete] 初始化完成');
+}
+
+/**
+ * 搜索地点建议
+ * @param {string} keyword - 搜索关键词
+ */
+function searchSuggestions(keyword) {
+    const suggestions = document.getElementById('search-suggestions');
+    
+    if (!keyword || keyword.length < 2) {
+        suggestions.classList.remove('show');
+        return;
+    }
+    
+    if (!autoComplete) {
+        console.log('[AutoComplete] 还未初始化，尝试初始化…');
+        initAutoComplete();
+        return;
+    }
+    
+    // 执行搜索
+    autoComplete.search(keyword, (status, result) => {
+        if (status === 'complete' && result.tips) {
+            renderSuggestions(result.tips);
+        } else {
+            suggestions.classList.remove('show');
+        }
+    });
+}
+
+/**
+ * 渲染搜索建议列表
+ * @param {Array} tips - 搜索建议结果
+ */
+function renderSuggestions(tips) {
+    const suggestions = document.getElementById('search-suggestions');
+    
+    // 过滤有效的建议（有坐标的）
+    const validTips = tips.filter(t => t.location);
+    
+    if (validTips.length === 0) {
+        suggestions.classList.remove('show');
+        return;
+    }
+    
+    // 确定下一个可用的中心点
+    const count = getCenterCount();
+    const nextLabel = count === 0 ? 'C1' : count === 1 ? 'C2' : count === 2 ? 'C3' : null;
+    
+    suggestions.innerHTML = validTips.slice(0, 8).map(tip => `
+        <div class="suggestion-item" data-lng="${tip.location.lng}" data-lat="${tip.location.lat}" data-name="${tip.name}">
+            <div class="name">${tip.name}</div>
+            <div class="district">${tip.address || tip.district || ''}</div>
+            ${nextLabel ? `<span class="action-btn">选为 ${nextLabel}</span>` : '<span class="action-btn">替换 C1</span>'}
+        </div>
+    `).join('');
+    
+    suggestions.classList.add('show');
+    
+    // 绑定点击事件
+    suggestions.querySelectorAll('.suggestion-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const lng = parseFloat(item.dataset.lng);
+            const lat = parseFloat(item.dataset.lat);
+            const name = item.dataset.name;
+            const lnglat = [lng, lat];
+            
+            // 根据当前状态选择下一个中心点
+            if (count < 3) {
+                setCenterPoint(count, lnglat, name);
+            } else {
+                // 如果3个都已选，替换C1
+                setCenterPoint(0, lnglat, name);
+            }
+            
+            // 关闭建议列表
+            suggestions.classList.remove('show');
+            document.getElementById('search-input').value = '';
+        });
+    });
+}
+
+// 关闭建议列表当点击其他地方时
+document.addEventListener('click', (e) => {
+    const suggestions = document.getElementById('search-suggestions');
+    const searchBox = document.getElementById('search-box-wrap');
+    if (!searchBox.contains(e.target)) {
+        suggestions.classList.remove('show');
+    }
+});
+
+// 搜索框输入事件
+let searchTimeout = null;
+document.getElementById('search-input').addEventListener('input', (e) => {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+        searchSuggestions(e.target.value);
+    }, 300);
+});
+
+// 搜索框获得焦点时，如果有内容就显示建议
+document.getElementById('search-input').addEventListener('focus', (e) => {
+    if (e.target.value.length >= 2) {
+        searchSuggestions(e.target.value);
+    }
+});
+
+/**
+ * 更新动态标签（中心点位置名称）- 与左侧卡片显示完全一致
+ */
+function updateDynamicLabels() {
+    const count = getCenterCount();
+    const centers = State.centers;
+
+    // 更新旧 A/B 统计标签（兼容现有 HTML 结构）
+    const elStatA = document.getElementById('label-stat-a');
+    const elStatB = document.getElementById('label-stat-b');
+    if (elStatA) elStatA.textContent = centers[0]?.name || 'C1';
+    if (elStatB) elStatB.textContent = centers[1]?.name || 'C2';
+
+    // 更新密度标签（多中心版本：C1/C2/C3）
+    centers.forEach((c, i) => {
+        const el = document.getElementById(`label-density-c${i + 1}`);
+        if (el) el.textContent = (c.name || `C${i + 1}`) + '区域';
+    });
+
+    // 更新右侧统计面板的标题
+    const panelTitle = document.getElementById('stat-panel-label');
+    if (panelTitle) {
+        const modeSuffix = VennState.centerCount === 2 ? '（双中心）' : (count >= 3 ? '（3中心）' : (count >= 2 ? '（2中心）' : ''));
+        panelTitle.textContent = (State.isDynamic ? '分析结果' : '实时分布') + modeSuffix;
+    }
+}
+
+// ================================================================
+// UI 状态更新
+// ================================================================
+
+/**
+ * 更新 UI 状态：按钮文字、提示信息、地图中心等
+ */
+function updateUI() {
+    const count = getCenterCount();
+    const hasEnough = count >= 2;  // 至少需要2个中心才能分析
+    const btn = document.getElementById('btn-analyze');
+    btn.disabled = !hasEnough;
+    
+    // 根据中心数量更新按钮状态
+    if (count >= 3) {
+        document.getElementById('btn-icon').textContent = '🔍';
+        document.getElementById('btn-text').textContent = '开始搜索（3中心）';
+    } else if (count >= 2) {
+        document.getElementById('btn-icon').textContent = '🔍';
+        document.getElementById('btn-text').textContent = '开始搜索（2中心）';
+    } else if (count === 1) {
+        document.getElementById('btn-icon').textContent = '⏳';
+        document.getElementById('btn-text').textContent = '请再选择1个位置';
+    } else {
+        document.getElementById('btn-icon').textContent = '⏳';
+        document.getElementById('btn-text').textContent = '请选择至少2个位置';
+    }
+
+    const hint = document.getElementById('pick-hint');
+    
+    // 根据选点步骤显示提示
+    if (State.pickStep !== null && State.pickStep < 3) {
+        const nextLabel = 'C' + (State.pickStep + 1);
+        const countText = count === 0 ? '第1个' : count === 1 ? '第2个' : '第3个';
+        hint.innerHTML = `点击地图选择 ${nextLabel}<span class="step">（${countText}中心）</span>`;
+        hint.classList.remove('hidden');
+    } else {
+        hint.classList.add('hidden');
+        document.getElementById('map-container').classList.add('picked');
+    }
+
+    // 重新渲染中心列表
+    renderCenterList();
+    
+    // 重新渲染统计面板
+    renderStatPanel();
+    
+    // 更新密度控制的颜色（根据实际中心颜色）
+    updateDensityColors();
+}
+
+/**
+ * 更新密度控制的颜色（根据实际中心颜色动态变化）
+ */
+function updateDensityColors() {
+    const centerIds = getCenterIds();
+    const centerCount = centerIds.length;
+    
+    // 更新 C1 颜色
+    const c1Color = centerCount >= 1 ? getCenterColor(centerIds[0]) : '#999';
+    const label1 = document.getElementById('label-density-c1');
+    const val1 = document.getElementById('val-density-c1');
+    if (label1) label1.textContent = centerCount >= 1 ? getCenterLabel(centerIds[0]) : 'C1';
+    if (val1) val1.style.color = c1Color;
+    
+    // 更新 C2 颜色
+    const c2Color = centerCount >= 2 ? getCenterColor(centerIds[1]) : '#999';
+    const label2 = document.getElementById('label-density-c2');
+    const val2 = document.getElementById('val-density-c2');
+    if (label2) label2.textContent = centerCount >= 2 ? getCenterLabel(centerIds[1]) : 'C2';
+    if (val2) val2.style.color = c2Color;
+    
+    // 更新 C3 颜色
+    const c3Color = centerCount >= 3 ? getCenterColor(centerIds[2]) : '#999';
+    const label3 = document.getElementById('label-density-c3');
+    const val3 = document.getElementById('val-density-c3');
+    if (label3) label3.textContent = centerCount >= 3 ? getCenterLabel(centerIds[2]) : 'C3';
+    if (val3) val3.style.color = c3Color;
+    
+    // 更新小圆点颜色
+    const dot1 = document.querySelector('#control-panel .card:nth-child(3) [style*="--whu-color"]');
+    if (dot1) dot1.style.background = c1Color;
+}
+
+// ================================================================
+// POI 搜索 + 驾车时间查询
+// ================================================================
+
+/** 显示全屏加载遮罩 */
+function showLoading(msg, sub) {
+    const ov = document.getElementById('loading-overlay');
+    document.getElementById('loading-text').textContent = msg;
+    document.getElementById('loading-sub').textContent  = sub;
+    ov.style.display = 'flex';
+}
+
+/** 隐藏全屏加载遮罩 */
+function hideLoading() {
+    document.getElementById('loading-overlay').style.display = 'none';
+}
+
+/**
+ * 用单个关键词搜索周边 POI（单次请求，最多 25 条）
+ * @param {Array} center - 中心点坐标 [经度, 纬度]
+ * @param {number} radius - 搜索半径（米）
+ * @param {string} keyword - 单个关键词
+ * @param {number} page - 页码（从1开始）
+ * @returns {Promise<{pois: Array, count: number}>}
+ */
+function searchPOIPage(center, radius, keyword, page) {
+    return new Promise((resolve, reject) => {
+        const ps = new AMap.PlaceSearch({
+            type: '',
+            pageSize: 50,
+            pageIndex: page,
+            citylimit: false
+        });
+        const timer = setTimeout(() => {
+            console.warn(`[POI] 搜索超时: ${keyword} 第${page}页`);
+            resolve({ pois: [], count: 0 });
+        }, 8000);
+        ps.searchNearBy(keyword, center, radius, (status, result) => {
+            clearTimeout(timer);
+            if (status === 'complete' && result.poiList && result.poiList.pois) {
+                resolve({ pois: result.poiList.pois, count: result.poiList.count || 0 });
+            } else {
+                resolve({ pois: [], count: 0 });
+            }
+        });
+    });
+}
+
+/**
+ * 搜索周边 POI（支持多关键词、自动翻页、去重）
+ * @param {Array} center - 中心点坐标 [经度, 纬度]
+ * @param {number} radius - 搜索半径（米）
+ * @param {string} keywordsStr - 关键词（逗号分隔）
+ * @param {number} maxTotal - 最多返回多少条（默认 100）
+ * @returns {Promise<Array>} 去重后的 POI 列表
+ */
+async function searchNearbyPOI(center, radius, keywordsStr, maxTotal = 2000) {
+    // 把逗号分隔的关键词拆成独立词，每个词单独搜索
+    const keywords = keywordsStr.split(',').map(k => k.trim()).filter(k => k);
+    if (keywords.length === 0) keywords.push('景点');
+
+    const merged = new Map();  // id → poi，用于去重
+
+    for (const kw of keywords) {
+        // 先取第一页，看总数决定是否翻页
+        const first = await searchPOIPage(center, radius, kw, 1);
+        console.log(`[POI] 关键词"${kw}" 第1页: ${first.pois.length} 条，总计 ${first.count} 条`);
+        
+        first.pois.forEach(p => merged.set(p.id || p.name, p));
+
+        // 如果还有更多页（且未超出限制），继续翻页（最多取10页 = 250条/关键词）
+        const totalPages = Math.min(10, Math.ceil(Math.max(first.count, first.pois.length * 5) / 25));
+        if (totalPages > 1 && merged.size < maxTotal) {
+            const pagePromises = [];
+            for (let pg = 2; pg <= totalPages; pg++) {
+                pagePromises.push(searchPOIPage(center, radius, kw, pg));
+            }
+            const pages = await Promise.all(pagePromises);
+            pages.forEach(({ pois }) => {
+                pois.forEach(p => merged.set(p.id || p.name, p));
+            });
+            console.log(`[POI] 关键词"${kw}" 翻页完成，累计去重后 ${merged.size} 条`);
+        }
+
+        if (merged.size >= maxTotal) break;
+    }
+
+    const result = Array.from(merged.values()).slice(0, maxTotal);
+    console.log(`[POI] 最终 POI 数量: ${result.length}`);
+    return result;
+}
+
+/**
+ * 将高德坐标对象统一转为 [lng, lat] 数组
+ * @param {Array|Object} loc
+ * @returns {Array|null}
+ */
+function toLngLatArr(loc) {
+    if (!loc) return null;
+    if (Array.isArray(loc)) return loc;
+    if (typeof loc.getLng === 'function') return [loc.getLng(), loc.getLat()];
+    if (loc.lng !== undefined) return [loc.lng, loc.lat];
+    return null;
+}
+
+/**
+ * 查询单条驾车时间（每次用独立实例，支持真正并发）
+ * @param {Array} origin - 起点 [lng, lat]
+ * @param {Array|Object} dest - 终点
+ * @returns {Promise<number|null>} 驾车时间（分钟）
+ */
+function getDrivingTime(origin, dest) {
+    return new Promise(resolve => {
+        const destArr = toLngLatArr(dest);
+        if (!destArr) { resolve(null); return; }
+
+        // 每次创建新实例，避免串行等待
+        const drv = new AMap.Driving({ policy: AMap.DrivingPolicy.LEAST_TIME });
+        // 路线查询超时保护：20s（提高以确保API返回）
+        const timer = setTimeout(() => {
+            drv.cancel();
+            resolve(null);
+        }, 20000);
+        drv.search(
+            new AMap.LngLat(origin[0], origin[1]),
+            new AMap.LngLat(destArr[0], destArr[1]),
+            (status, result) => {
+                clearTimeout(timer);
+                if (status === 'complete' && result.routes && result.routes[0]) {
+                    resolve(Math.round(result.routes[0].time / 60));
+                } else {
+                    resolve(null);
+                }
+            }
+        );
+    });
+}
+
+/**
+ * 带重试的驾车时间查询（最多重试2次）
+ */
+async function getDrivingTimeWithRetry(origin, dest, retries = 2) {
+    for (let i = 0; i <= retries; i++) {
+        const result = await getDrivingTime(origin, dest);
+        if (result !== null) {
+            return { time: result, estimated: false };
+        }
+        if (i < retries) {
+            // 等待1秒后重试
+            await new Promise(r => setTimeout(r, 1000));
+        }
+    }
+    return { time: null, estimated: false };
+}
+
+/**
+ * 计算两点之间的直线距离（米）
+ * Haversine公式
+ */
+function getDistanceMeters(origin, dest) {
+    const R = 6371000; // 地球半径（米）
+    const lat1 = origin[1] * Math.PI / 180;
+    const lat2 = dest[1] * Math.PI / 180;
+    const dLat = (dest[1] - origin[1]) * Math.PI / 180;
+    const dLng = (dest[0] - origin[0]) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng/2) * Math.sin(dLng/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+}
+
+/**
+ * 根据直线距离估算驾车时间（分钟）
+ * 假设平均时速40km/h（含红绿灯、拥堵等）
+ */
+function estimateDrivingTime(origin, dest) {
+    const distanceKm = getDistanceMeters(origin, dest) / 1000;
+    const avgSpeedKmh = 40;
+    return Math.round((distanceKm / avgSpeedKmh) * 60);
+}
+
+/**
+ * 查询驾车时间，失败时用直线距离估算
+ * @param {Array} origin - 起点 [lng, lat]
+ * @param {Array} dest - 终点 [lng, lat]
+ * @returns {Promise<{time: number, estimated: boolean}>}
+ */
+async function getDrivingTimeWithEstimation(origin, dest) {
+    const time = await getDrivingTime(origin, dest);
+    if (time !== null) {
+        return { time, estimated: false };
+    }
+    // API失败，用直线距离估算
+    const estimated = estimateDrivingTime(origin, dest);
+    console.log(`[路线] ${origin} → ${dest} API失败，估算时间: ${estimated}min`);
+    return { time: estimated, estimated: true };
+}
+
+/**
+ * 全局速率限制器：确保 API 请求不超过 QPS 限制
+ */
+const rateLimiter = {
+    lastCallTime: 0,
+    minInterval: 250,  // 每次请求至少间隔 250ms（即 4 QPS，保守安全）
+    async wait() {
+        const now = Date.now();
+        const elapsed = now - this.lastCallTime;
+        if (elapsed < this.minInterval) {
+            await new Promise(resolve => setTimeout(resolve, this.minInterval - elapsed));
+        }
+        this.lastCallTime = Date.now();
+    }
+};
+
+/**
+ * 限流并发器：同时最多 maxConcurrent 个 Promise
+ * @param {Array} tasks - 每个元素是一个返回 Promise 的函数
+ * @param {number} maxConcurrent
+ * @param {Function} onProgress - 每完成一个任务回调 (done, total)
+ */
+async function limitedConcurrent(tasks, maxConcurrent, onProgress) {
+    const results = new Array(tasks.length).fill(null);
+    let nextIdx = 0;
+    let done = 0;
+
+    async function worker() {
+        while (nextIdx < tasks.length) {
+            const idx = nextIdx++;
+            try {
+                // 等待速率限制器
+                await rateLimiter.wait();
+                results[idx] = await tasks[idx]();
+            } catch (e) {
+                results[idx] = null;
+            }
+            done++;
+            if (onProgress) onProgress(done, tasks.length);
+        }
+    }
+
+    const workers = [];
+    for (let i = 0; i < Math.min(maxConcurrent, tasks.length); i++) {
+        workers.push(worker());
+    }
+    await Promise.all(workers);
+    return results;
+}
+
+/**
+ * 执行完整分析流程
+ * 1. 并发搜索 A/B 两点周边 POI
+ * 2. 合并去重（不再要求景点同时出现在两个搜索结果中）
+ * 3. 批量查询到 A/B 的驾车时间
+ * 4. 更新可视化和统计
+ */
+async function runAnalysis() {
+    const count = getCenterCount();
+    if (count < 2) return;
+
+    if (!State.ready) {
+        alert('地图尚未就绪，请稍等片刻后重试');
+        return;
+    }
+
+    const radius   = +document.getElementById('input-radius').value * 1000;  // km → m
+    const keywords = document.getElementById('input-keyword').value.trim() || '景点';
+
+    const centers = State.centers.map(c => c.lnglat);
+    const centerIds = getCenterIds();
+
+    console.log('[分析] 搜索 ' + count + ' 个中心附近', {
+        centers,
+        radius_m: radius,
+        radius_km: (radius/1000).toFixed(1),
+        keywords
+    });
+
+    showLoading('正在搜索景点…', `搜索 ${count} 个中心附近 ${radius/1000}km 范围 · 关键词：${keywords}`);
+
+    try {
+        // 并发搜索所有中心的周边 POI，然后合并去重
+        const searchPromises = centers.map(center => searchNearbyPOI(center, radius, keywords));
+        const allPoiArrays = await Promise.all(searchPromises);
+
+        console.log('[分析] 各中心搜到:', allPoiArrays.map((arr, i) => centerIds[i] + ':' + arr.length).join(', '));
+
+        // 按 POI ID 去重合并
+        const poiMap = new Map();
+        allPoiArrays.forEach(pois => {
+            pois.forEach(p => poiMap.set(p.id || p.name, p));
+        });
+        const allPOIs = Array.from(poiMap.values());
+
+        console.log(`[分析] 合并去重后 ${allPOIs.length} 个景点`);
+
+        // 按距离排序：优先保留距离任一中心较近的景点
+        allPOIs.sort((a, b) => {
+            const locA = toLngLatArr(a.location);
+            const locB = toLngLatArr(b.location);
+            const distA = Math.min(...centers.map(c => getDistanceMeters(c, locA)));
+            const distB = Math.min(...centers.map(c => getDistanceMeters(c, locB)));
+            return distA - distB;
+        });
+
+        console.log('[分析] POI 按距离排序完成');
+
+        if (allPOIs.length === 0) {
+            hideLoading();
+            alert('未找到任何景点，请扩大搜索半径或更换关键词');
+            return;
+        }
+
+        // 限制景点数量：只保留距离最近的 300 个
+        const MAX_POI_COUNT = 300;
+        const limitedPOIs = allPOIs.slice(0, MAX_POI_COUNT);
+        const totalRoute = limitedPOIs.length * count;
+
+        showLoading(`正在计算 ${limitedPOIs.length} 个景点的路线…`, `0 / ${totalRoute} 条路线完成`);
+
+        // 查询每个景点到所有中心的驾车时间
+        const newData = [];
+        let routeDone = 0;
+        let estimatedCount = 0;
+
+        // 更新进度
+        function updateProgress() {
+            document.getElementById('loading-text').textContent = `正在计算路线…`;
+            document.getElementById('loading-sub').textContent = `已完成 ${routeDone} / ${totalRoute} 条${estimatedCount > 0 ? `（估算${estimatedCount}条）` : ''}`;
+        }
+
+        // 把每个景点的多中心查询拆成独立 task
+        const tasks = limitedPOIs.flatMap(poi => {
+            const loc = toLngLatArr(poi.location);
+            return centers.map((center, idx) => async () => {
+                let result = await getDrivingTimeWithRetry(center, loc, 2);
+                if (result.time === null) {
+                    result = await getDrivingTimeWithEstimation(center, loc);
+                    estimatedCount++;
+                }
+                routeDone++;
+                updateProgress();
+                return { poi, side: centerIds[idx], t: result.time, estimated: result.estimated };
+            });
+        });
+
+        // 最多 4 条路线并发
+        const MAX_CONCURRENT = 4;
+
+        const rawResults = await limitedConcurrent(tasks, MAX_CONCURRENT);
+
+        // 收集每个POI的所有时间数据
+        const timeMap = new Map();
+        rawResults.forEach(r => {
+            if (!r) return;
+            const key = r.poi.id || r.poi.name;
+            if (!timeMap.has(key)) {
+                const entry = { poi: r.poi, times: {}, estimated: {} };
+                centerIds.forEach(id => { entry.times[id] = null; entry.estimated[id] = false; });
+                timeMap.set(key, entry);
+            }
+            timeMap.get(key).times[r.side] = r.t;
+            timeMap.get(key).estimated[r.side] = r.estimated;
+        });
+
+        // 所有结果都参与计算
+        timeMap.forEach(({ poi, times, estimated }) => {
+            // 检查是否所有中心都有有效时间
+            const allValid = centerIds.every(id => times[id] !== null);
+            if (allValid) {
+                newData.push({
+                    text: poi.name,
+                    times: { ...times },
+                    estimated: { ...estimated }
+                });
+            }
+        });
+
+        const apiFailCount = newData.filter(d => Object.values(d.estimated).some(e => e)).length;
+        console.log(`[分析] 路线计算完成：${newData.length} 条，其中 ${apiFailCount} 条使用直线距离估算`);
+
+        if (newData.length === 0) {
+            hideLoading();
+            alert('路线查询全部失败，请检查 API Key 配额或网络');
+            return;
+        }
+
+        // ========== 更新数据和 UI ==========
+        RAW_DATA.length = 0;
+        newData.forEach(d => RAW_DATA.push(d));
+
+        // 根据实际数据调整滑块上限
+        const allTimes = RAW_DATA.flatMap(d => Object.values(d.times));
+        const actualMax = Math.max(...allTimes);
+        DATA_MAX = Math.max(30, actualMax + 10);
+
+        State.isDynamic = true;
+        
+        // 初始化 VennState
+        const centerCount = State.centers.length;
+        VennState.centerCount = centerCount;
+        VennState.activeCenters = centerCount >= 2 ? [State.centers[0].id, State.centers[1].id] : [];
+        
+        const totalFound = allPOIs.length;
+        const displayCount = totalFound > MAX_POI_COUNT 
+            ? `${newData.length}/${totalFound}` 
+            : newData.length;
+        document.getElementById('result-poi-count').innerHTML = 
+            `共找到 <strong>${displayCount}</strong> 个景点${totalFound > MAX_POI_COUNT ? '（限显示前' + MAX_POI_COUNT + '个）' : ''}`;
+        
+        // 显示中心信息
+        const centerInfo = State.centers.map((c, i) => 
+            `${c.name} (${c.lnglat[0].toFixed(3)}, ${c.lnglat[1].toFixed(3)})`
+        ).join('<br>');
+        document.getElementById('result-detail').innerHTML =
+            `搜索半径：${radius/1000}km | 关键词：${keywords}<br>` + centerInfo;
+        document.getElementById('result-stats').classList.add('show');
+        document.getElementById('empty-state').classList.add('hidden');
+
+        updateDynamicLabels();
+        applyDataRange();
+        Painter.update();
+    } catch (err) {
+        console.error('[分析] 出错:', err);
+        alert('分析过程出错：' + err.message + '\n请查看控制台获取详情');
+    } finally {
+        hideLoading();
+    }
+}
+
+// ================================================================
+// 重置功能
+// ================================================================
+
+/**
+ * 重置所有状态到初始值
+ */
+function resetAll() {
+    // 清除所有中心点
+    clearAllCenters();
+    
+    State.pickStep = 0;
+    State.isDynamic = false;
+    State.density = { C1: 0.3, C2: 0.3, C3: 0.3, mid: 0.3 };
+
+    // 重置 VennState
+    VennState.centerCount = 2;
+    VennState.activeCenters = ['C1', 'C2'];
+    VennState.hoveredZone = null;
+    VennState.activeZone = null;
+
+    // 重置卡片样式
+    renderCenterList();
+    
+    document.getElementById('result-stats').classList.remove('show');
+    document.getElementById('empty-state').classList.remove('hidden');
+    document.getElementById('map-container').classList.remove('picked');
+
+    // 清空数据
+    RAW_DATA.length = 0;
+    DATA_MAX = 60;
+    applyDataRange();
+    updateDynamicLabels();
+    updateUI();
+    Painter.update();
+
+    // 重置地图
+    if (State.map) {
+        State.map.setCenter([114.31, 30.58]);
+        State.map.setZoom(12);
+        document.getElementById('map-container').style.borderColor = '#9e9e9e';
+        document.getElementById('map-container').style.borderStyle = 'dashed';
+        document.getElementById('amap-wrap').style.opacity = '1';
+    }
+}
+
+// ================================================================
+// 滑块范围适配
+// ================================================================
+
+/**
+ * 根据实际数据调整滑块范围
+ */
+function applyDataRange() {
+    const max = DATA_MAX;
+    const setAttr = (id, attr, val) => {
+        const el = document.getElementById(id);
+        if (el) el.setAttribute(attr, val);
+    };
+
+    setAttr('input-t-min', 'max', max);
+    setAttr('input-t-max', 'max', max);
+    setAttr('input-merged-dt', 'max', max);
+    document.getElementById('scale-max-label').textContent = max + 'm';
+    syncRangeTrack();
+}
+
+/**
+ * 同步区间滑块的轨道样式
+ */
+function syncRangeTrack() {
+    const tMin = +document.getElementById('input-t-min').value;
+    const tMax = +document.getElementById('input-t-max').value;
+    const track = document.getElementById('range-track');
+    if (track) {
+        track.style.left  = (tMin / DATA_MAX * 100) + '%';
+        track.style.width = ((tMax - tMin) / DATA_MAX * 100) + '%';
+    }
+    const valTmax = document.getElementById('val-tmax');
+    if (valTmax) valTmax.textContent = `${tMin} – ${tMax} min`;
+}
+
+/**
+ * 设置时间区间
+ */
+function setRange(tMin, tMax) {
+    tMax = Math.min(tMax, DATA_MAX);
+    document.getElementById('input-t-min').value = tMin;
+    document.getElementById('input-t-max').value = tMax;
+    syncRangeTrack();
+    Painter.update();
+}
+
+// 融合面板辅助函数
+function setMergedDt(v) {
+    document.getElementById('input-merged-dt').value = v;
+    document.getElementById('val-dt').textContent = v + ' min';
+    Painter.update();
+}
+
+// ================================================================
+// 事件绑定
+// ================================================================
+
+// 初始化可视化
+Painter.init();
+
+// ========== 融合面板事件 ==========
+
+// 时间区间双滑块
+document.getElementById('input-t-min').addEventListener('input', () => {
+    const tMin = +document.getElementById('input-t-min').value;
+    const tMax = +document.getElementById('input-t-max').value;
+    if (tMin >= tMax) document.getElementById('input-t-min').value = tMax - 1;
+    syncRangeTrack();
+    Painter.update();
+});
+
+document.getElementById('input-t-max').addEventListener('input', () => {
+    const tMin = +document.getElementById('input-t-min').value;
+    const tMax = +document.getElementById('input-t-max').value;
+    if (tMax <= tMin) document.getElementById('input-t-max').value = tMin + 1;
+    syncRangeTrack();
+    Painter.update();
+});
+
+// 均衡阈值滑块
+document.getElementById('input-merged-dt').addEventListener('input', () => {
+    const v = document.getElementById('input-merged-dt').value;
+    document.getElementById('val-dt').textContent = v + ' min';
+    Painter.update();
+});
+
+// ========== 显示密度控制（三个区域独立） ==========
+
+// 密度预设按钮
+document.querySelectorAll('[data-density]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const zone = btn.dataset.zone;
+        const density = +btn.dataset.density;
+        State.density[zone] = density;
+
+        // 更新按钮状态（同区域内的按钮）
+        document.querySelectorAll(`[data-zone="${zone}"]`).forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        // 更新显示值
+        const percent = Math.round(density * 100);
+        const valEl = document.getElementById(`val-density-${zone.toLowerCase()}`);
+        if (valEl) valEl.textContent = percent + '%';
+
+        // 重新渲染
+        Painter.update();
+    });
+});
+
+// ========== 搜索参数事件 ==========
+
+// 半径滑块
+document.getElementById('input-radius').addEventListener('input', () => {
+    document.getElementById('val-radius').textContent=document.getElementById('input-radius').value+' km';
+});
+
+// 半径预设按钮
+document.querySelectorAll('[data-r]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('input-radius').value=+btn.dataset.r;
+        document.getElementById('val-radius').textContent=btn.dataset.r+' km';
+        updateSearchCircles();  // 手动调用更新圆圈
+    });
+});
+
+// 关键词预设按钮
+document.querySelectorAll('.kw-preset').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.getElementById('input-keyword').value = btn.dataset.kw;
+        document.getElementById('input-keyword').dispatchEvent(new Event('input'));
+    });
+});
+
+// ========== 搜索半径实时预览 ==========
+
+// 当半径改变时，更新地图上的搜索范围圆圈
+document.getElementById('input-radius').addEventListener('input', () => {
+    updateSearchCircles();
+});
+
+// ========== 主操作按钮 ==========
+
+document.getElementById('btn-analyze').addEventListener('click', runAnalysis);
+document.getElementById('btn-reset').addEventListener('click', resetAll);
+
+// 添加中心按钮
+document.getElementById('btn-add-center').addEventListener('click', () => {
+    const count = getCenterCount();
+    if (count < 3) {
+        // 启用地图点击来添加下一个中心
+        State.pickStep = count;
+        updateUI();
+        alert(`请在地图上点击选择第 ${count + 1} 个中心位置`);
+    }
+});
+
+// ================================================================
+// 启动应用
+// ================================================================
+
+renderCenterList(); // 初始化中心点卡片列表
+applyDataRange();   // 初始化滑块范围
+Painter.update();   // 初始化可视化（空状态）
+initMap();          // 异步初始化地图（不阻塞）
+</script>
+</body>
+</html>
